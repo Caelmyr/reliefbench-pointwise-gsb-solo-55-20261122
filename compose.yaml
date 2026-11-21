@@ -1,0 +1,22 @@
+name: solo58-reliefbench
+services:
+  web:
+    build:
+      context: .
+      args:
+        RELIEFBENCH_DEPENDENCY_IMAGE: ${RELIEFBENCH_DEPENDENCY_IMAGE:-python:3.11-slim}
+    image: ${RELIEFBENCH_IMAGE:-solo58-reliefbench:1.0}
+    init: true
+    network_mode: bridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${RELIEFBENCH_PORT:-19958}:8000"
+    volumes:
+      - relief-library:/var/lib/reliefbench
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()"]
+      interval: 4s
+      timeout: 4s
+      retries: 9
+volumes:
+  relief-library:
