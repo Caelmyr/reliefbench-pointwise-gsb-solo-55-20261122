@@ -386,8 +386,111 @@ function renderReport(target, output){
     } else if(uri) downloads.append(link(file.name,uri,{class:"action",download:file.name}));
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
+  const grainSlot=report.kind==="grain"?el("div",{class:"grain-slot"}):null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
-    metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+    metrics,grainSlot,figures,downloads,table(report.rows),warnings].filter(Boolean));
+  if(grainSlot){
+    const readingsFile=output.files?.find(f=>f.key==="grain-readings");
+    loadReadings(readingsFile).then(doc=>{
+      if(!doc) return;
+      const inspector=grainInspector(output,doc);
+      if(inspector && target.contains(grainSlot)) grainSlot.replaceChildren(inspector);
+    });
+  }
+}
+
+async function loadReadings(file){
+  if(!file) return null;
+  if(file.data?.startsWith("data:application/json;base64,")){
+    try{ return JSON.parse(atob(file.data.split(",",2)[1])); } catch { return null; }
+  }
+  if(file.url){
+    try{ return await api(file.url); } catch { return null; }
+  }
+  return null;
+}
+
+function grainInspector(output, doc){
+  const mapImage=output.files?.find(f=>f.key==="grain-direction-map");
+  if(!doc||!mapImage) return null;
+  const tiles=doc.tiles||[];
+  const box=el("div",{class:"grain-inspector"});
+  const layer=el("div",{class:"grain-map",id:"grain-map"});
+  layer.append(el("img",{src:mapImage.url||mapImage.data,alt:"Brush grain direction map",draggable:false}));
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 1000 1000");svg.setAttribute("preserveAspectRatio","none");
+  layer.append(svg);
+  const detail=el("div",{class:"grain-detail","aria-live":"polite"});
+  box.append(el("h3",{text:"Tile direction readout"}),
+    el("p",{class:"meta",text:"Click a tile on the direction map to review the original frame area it used and the band readings at this line width."}),
+    layer,detail);
+  const captureById=new Map((state.item?.captures||[]).map(c=>[c.id,c]));
+  function select(tile){
+    for(const node of svg.querySelectorAll("polygon")) node.setAttribute("data-active",
+      node.dataset.tile===tile.tile?"true":"false");
+    detail.replaceChildren(...grainTileDetail(tile,doc,captureById));
+  }
+  for(const tile of tiles){
+    const [l,t,r,b]=tile.boundary;
+    const poly=document.createElementNS("http://www.w3.org/2000/svg","polygon");
+    poly.setAttribute("points",`${l*1000},${t*1000} ${r*1000},${t*1000} ${r*1000},${b*1000} ${l*1000},${b*1000}`);
+    poly.dataset.tile=tile.tile;poly.dataset.active="false";
+    poly.setAttribute("class",`grain-cell grain-${tile.status}`);
+    const title=document.createElementNS("http://www.w3.org/2000/svg","title");
+    title.textContent=`Tile ${tile.tile} · ${tile.status}`+
+      (tile.direction_degrees!=null?` · ${tile.direction_degrees}°`:"");
+    poly.append(title);
+    poly.onclick=()=>select(tile);
+    svg.append(poly);
+  }
+  if(tiles[0]) select(tiles.find(t=>t.status==="confirmed")||tiles[0]);
+  return box;
+}
+
+function grainTileDetail(tile,doc,captureById){
+  const band=doc.settings.bandpass_cycles_per_mm||[];
+  const wave=doc.settings.bandpass_wavelength_mm||[];
+  const head=el("div",{class:"grain-head"},[
+    el("strong",{text:`Tile ${tile.tile}`}),
+    el("span",{class:`badge badge-${tile.status}`,text:tile.status}),
+    tile.direction_degrees!=null?el("span",{class:"badge",text:`${tile.direction_degrees}°`}):null,
+  ]);
+  const facts=el("dl",{class:"metrics grain-facts"},[
+    ...[
+      ["Line width band (mm)",wave.join(" – ")],
+      ["Frequency band (cycles/mm)",band.join(" – ")],
+      ["Band energy share",tile.band_energy_share],
+      ["Band prominence",tile.band_prominence],
+      ["Peak / runner-up",tile.peak_to_runner_up],
+      ["Observed fine pixels",tile.observed_samples],
+      ["Observed fraction",tile.observed_fraction],
+      ["Tile size (mm)",(tile.tile_size_mm||[]).join(" × ")],
+      ["Cycles across tile",tile.cycles_across_tile],
+    ].map(([k,v])=>el("div",{},[el("dt",{text:k}),el("dd",{text:asText(v)})])),
+  ]);
+  const reasons=tile.uncertain_reasons?.length
+    ?el("ul",{class:"warnings"},tile.uncertain_reasons.map(r=>el("li",{text:human(r)}))):null;
+  const sources=el("div",{class:"grain-sources"});
+  sources.append(el("h4",{text:"Original frame area used"}));
+  for(const win of tile.source_windows||[]){
+    const cap=captureById.get(win.capture);
+    const imgUri=cap?`/api/captures/${win.capture}/image/preview`:null;
+    const [l,t,r,b]=win.camera_bbox;
+    const frame=el("figure",{class:"grain-source"},[
+      imgUri?el("div",{class:"grain-source-img"},[
+        el("img",{src:imgUri,alt:win.title,draggable:false}),
+        (()=>{const s=document.createElementNS("http://www.w3.org/2000/svg","svg");
+          s.setAttribute("viewBox","0 0 1000 1000");s.setAttribute("preserveAspectRatio","none");
+          const p=document.createElementNS("http://www.w3.org/2000/svg","polygon");
+          p.setAttribute("points",win.camera_corners.map(c=>`${c[0]*1000},${c[1]*1000}`).join(" "));
+          p.setAttribute("class","grain-source-box");s.append(p);return s;})(),
+      ]):null,
+      el("figcaption",{},[el("strong",{text:win.title}),
+        el("small",{text:`${win.registration_id} · camera bbox ${[l,t,r,b].join(", ")}`})]),
+    ]);
+    sources.append(frame);
+  }
+  return [head,facts,reasons,sources].filter(Boolean);
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});

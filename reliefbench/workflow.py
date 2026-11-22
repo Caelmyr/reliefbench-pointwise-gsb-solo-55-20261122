@@ -14,6 +14,7 @@ from .sampling import camera_trace, frames_review, glare_census, light_patch, ov
 from .shapetools import coverage, gradient_check, height_report, normal_report, physical_section, relighting
 from .surface_export import contour_export, mesh_export
 from .texture import texture_report, tile_material, topographic_census
+from .grain import grain_report
 
 
 class Tool(NamedTuple):
@@ -164,6 +165,14 @@ TOOLS = {
     "tiles": Tool("Material cells", "Metrology", "raking", 3, 12,
                   "Compare physical tiles by albedo or estimated orientation.", tile_material,
                   (*tile_controls(6, 8), menu("kind", "Metric", "albedo", "albedo", "redness", "incline"))),
+    "grain": Tool("Brush grain direction", "Metrology", "raking", 3, 12,
+                  "Confirm brushed-line direction tile by tile at one chosen millimetre line width.",
+                  grain_report,
+                  (menu("kind", "Grain input", "slope", "height", "slope", "albedo"),
+                   num("line_mm", "Brushed line width, mm", .8, .05, 12., .01),
+                   *tile_controls(8, 10),
+                   num("detrend_mm", "Detrend radius, mm", 1.6, .2, 40., .1),
+                   num("boundary_margin_mm", "Boundary margin, mm", .5, 0., 12., .1))),
     "features": Tool("Local relief features", "Metrology", "raking", 3, 12,
                      "Locate and size relative bumps and dents on one measured area.", topographic_census,
                      (menu("sense", "Feature", "ridge", "ridge", "dent"),

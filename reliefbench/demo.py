@@ -35,6 +35,9 @@ DEMOS = {
                  "Synthetic practice seal with ridges, abrasions and directional shadows.", 108., 78., (.55, .34, .23), 15),
     "slate": Demo("slate", "Slate carving study", "TRAINING · RB-B",
                   "Synthetic study plate with broad engraved lines and a narrow unobserved margin.", 144., 104., (.29, .36, .44), 75),
+    "brushplate": Demo("brushplate", "Brushed plate with cross scratch", "TRAINING · RB-C",
+                       "Synthetic plate with two brush fields of different grain and one deep transverse scratch.",
+                       110., 80., (.46, .47, .45), 41),
 }
 LIGHTS = (
     (16, 38, .85, 0.), (66, 43, 1.0, -.25), (118, 52, 1.02, 0.),
@@ -97,11 +100,52 @@ def _seeded_micro(x, y, rng):
     return texture
 
 
+# Two abutting brush fields run at these angles (degrees along the brushed
+# lines, clockwise from image right) with this repeating line width in mm.
+BRUSH_ANGLES = (28., 112.)
+BRUSH_SPLIT_X = .53
+BRUSH_LINE_MM = .8
+BRUSH_SCRATCH_MM = 3.2
+
+
+def _brush_field(x, y, width_mm, height_mm, rng):
+    """Fine brushed ridges, a deep wide transverse scratch, and slow waviness."""
+    relief = np.zeros_like(x)
+    along = np.where(x < BRUSH_SPLIT_X, math.radians(BRUSH_ANGLES[0]), math.radians(BRUSH_ANGLES[1]))
+    # The phase advances across the ridges, i.e. along their normal, which is
+    # rotated 90 degrees from the direction the brushed lines run along.
+    normal = along + math.pi / 2.
+    # Build the pattern in physical millimetres so its wavevector has the
+    # requested angle and magnitude.  The working grid has nearly square
+    # pixels, so a physical wavevector at `normal` projects onto the grid with
+    # components (cos n / lambda, sin n / lambda) in cycles per millimetre.
+    # The second field is deliberately 18 percent wider.
+    left_field = x < BRUSH_SPLIT_X
+    wavelength = np.where(left_field, BRUSH_LINE_MM, BRUSH_LINE_MM * 1.18)
+    x_mm, y_mm = x * width_mm, y * height_mm
+    kx = np.cos(normal) / wavelength
+    ky = np.sin(normal) / wavelength
+    phase = math.tau * (kx * x_mm + ky * y_mm)
+    wobble = .004 * np.sin(math.tau * (2.1 * y) + rng.uniform(0, math.tau))
+    relief += .022 * np.sin(phase + wobble)
+    relief += .007 * np.sin(2 * phase + rng.uniform(0, math.tau))
+    # One deep, wide horizontal scratch: its wavelength is far outside the
+    # fine-line band, so the grain reading must not follow it.
+    scratch_y = .61 + .018 * np.sin(math.tau * 1.4 * x)
+    relief -= .16 * np.exp(-.5 * ((y - scratch_y) / (BRUSH_SCRATCH_MM / height_mm / 2.4)) ** 2)
+    return relief
+
+
 def form(spec, target=510):
     x, y = _grid(spec, target)
-    heights, region = _build_seal(x, y) if spec.key == "seal" else _build_slate(x, y)
-    rng = np.random.default_rng(spec.seed)
-    heights = heights + _seeded_micro(x, y, rng)
+    if spec.key == "brushplate":
+        rng = np.random.default_rng(spec.seed)
+        heights = _brush_field(x, y, spec.width_mm, spec.height_mm, rng)
+        region = np.hypot(x - .5, y - .5)
+    else:
+        heights, region = _build_seal(x, y) if spec.key == "seal" else _build_slate(x, y)
+        rng = np.random.default_rng(spec.seed)
+        heights = heights + _seeded_micro(x, y, rng)
     step_x = spec.width_mm / x.shape[1]
     step_y = spec.height_mm / x.shape[0]
     dy, dx = np.gradient(heights, step_y, step_x)
@@ -114,6 +158,10 @@ def form(spec, target=510):
     if spec.key == "slate":
         alpha[(x > .94) & (y < .31)] = 0
         alpha[(x - .19) ** 2 + (y - .76) ** 2 < .016 ** 2] = 0
+    if spec.key == "brushplate":
+        # A narrow unphotographed margin exercises the uncertain-tile rules.
+        alpha[(x < .035) & (y > .55)] = 0
+        alpha[(x > .965) | (y > .97)] = 0
     reflect = .06 + .065 * _ridge(x, .67, .075) * _ridge(y, .36, .08)
     reflect *= region < .5
     return SyntheticSurface(spec, heights, normals, material, alpha, reflect, (x, y))
