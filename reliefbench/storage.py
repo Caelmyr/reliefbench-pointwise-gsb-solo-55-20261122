@@ -84,8 +84,24 @@ CREATE TABLE IF NOT EXISTS review_event (
     decided_at TEXT NOT NULL,
     UNIQUE(inspection_id, revision)
 );
+CREATE TABLE IF NOT EXISTS height_join (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    left_id TEXT NOT NULL REFERENCES inspection(id),
+    right_id TEXT NOT NULL REFERENCES inspection(id),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS join_file (
+    join_id TEXT NOT NULL REFERENCES height_join(id),
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hash TEXT NOT NULL REFERENCES asset(hash),
+    PRIMARY KEY(join_id, key)
+);
 CREATE INDEX IF NOT EXISTS capture_surface ON capture(surface_id, created_at);
 CREATE INDEX IF NOT EXISTS inspection_surface ON inspection(surface_id, created_at);
+CREATE INDEX IF NOT EXISTS join_created ON height_join(created_at);
 """
 
 
@@ -412,6 +428,60 @@ class Library:
     def _procedures(self, conn, surface_id):
         rows = conn.execute("SELECT * FROM procedure WHERE surface_id=? ORDER BY created_at DESC", (surface_id,))
         return [{"id": row["id"], "created_at": row["created_at"], **json.loads(row["body"])} for row in rows]
+
+    def height_records(self):
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT i.id, i.title, i.surface_id, i.created_at, s.body AS surface_body
+                   FROM inspection AS i INNER JOIN surface AS s ON s.id=i.surface_id
+                   WHERE i.kind='height' ORDER BY i.created_at DESC""")
+            return [{"id": row["id"], "title": row["title"], "surface_id": row["surface_id"],
+                     "surface_title": json.loads(row["surface_body"])["title"],
+                     "created_at": row["created_at"]} for row in rows]
+
+    def save_join(self, title, left_id, right_id, body, assets):
+        join_id, stamp = key(), utc()
+        with self.connect(writing=True) as conn:
+            self._inspection(conn, left_id)
+            self._inspection(conn, right_id)
+            conn.execute("INSERT INTO height_join VALUES (?,?,?,?,?,?)",
+                         (join_id, title, left_id, right_id, dumps(body), stamp))
+            self._store_join_assets(conn, join_id, assets)
+            return {"id": join_id, "title": title, "left_id": left_id, "right_id": right_id,
+                    "created_at": stamp, **body}
+
+    def _store_join_assets(self, conn, join_id, assets):
+        for item in assets.values():
+            digest = self._store_asset(conn, item.content, item.mime)
+            conn.execute("INSERT INTO join_file VALUES (?,?,?,?)", (join_id, item.key, item.name, digest))
+
+    def joins(self):
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT j.id, j.title, j.left_id, j.right_id, j.body, j.created_at
+                                   FROM height_join AS j ORDER BY j.created_at DESC""")
+            return [{"id": row["id"], "title": row["title"], "left_id": row["left_id"],
+                     "right_id": row["right_id"], "created_at": row["created_at"], **json.loads(row["body"])}
+                    for row in rows]
+
+    def _join(self, conn, join_id):
+        row = guarded(conn.execute("SELECT * FROM height_join WHERE id=?", (join_id,)).fetchone(), "joined height")
+        media = conn.execute("""SELECT f.key,f.name,a.mime,a.size,a.hash FROM join_file f
+                                INNER JOIN asset a ON a.hash=f.hash WHERE f.join_id=? ORDER BY f.key""",
+                             (join_id,))
+        return {**{k: row[k] for k in ("id", "title", "left_id", "right_id", "created_at")},
+                **json.loads(row["body"]), "files": [dict(item) for item in media]}
+
+    def get_join(self, join_id):
+        with self.connect() as conn:
+            return self._join(conn, join_id)
+
+    def join_asset(self, join_id, key):
+        with self.connect() as conn:
+            self._join(conn, join_id)
+            row = guarded(conn.execute("SELECT name,hash FROM join_file WHERE join_id=? AND key=?",
+                                       (join_id, key)).fetchone(), "joined height file")
+        data, mime = self.read_asset(row["hash"])
+        return data, mime, row["name"]
 
     def procedures(self, surface_id):
         with self.connect() as conn:

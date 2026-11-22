@@ -489,5 +489,226 @@ function verifyPacket(){
 
 query("new-surface").onclick=()=>surfaceDialog();
 query("library-button").onclick=()=>guarded(openLibrary);
+query("joins-button").onclick=()=>guarded(openJoinView);
 query("verify-packet").onclick=verifyPacket;
 guarded(openLibrary);
+
+// ---- Join two relative height records onto one millimetre grid ----
+const joinState = { records: [], left: "", right: "", pairs: [], result: null, joins: [], opened: null };
+async function openJoinView(){
+  state.item=null; state.view="join";
+  await refreshJoinData();
+  renderJoinView();
+  note("");
+}
+async function refreshJoinData(){
+  const [heights, joins] = await Promise.all([api("/api/heights"), api("/api/joins")]);
+  joinState.records = heights.items;
+  joinState.joins = joins.items;
+  const usable = joinState.records.filter(r=>r.available);
+  if(!joinState.left || !joinState.records.some(r=>r.id===joinState.left && r.available)) joinState.left = usable[0]?.id || "";
+  if(!joinState.right || !joinState.records.some(r=>r.id===joinState.right && r.available)) {
+    joinState.right = (usable.find(r=>r.id!==joinState.left) || {}).id || "";
+  }
+  joinState.result = null; joinState.pairs = [];
+}
+function recordById(id){ return joinState.records.find(r=>r.id===id); }
+function recordSelect(label, value, onPick){
+  const select=el("select",{"aria-label":label});
+  for(const item of joinState.records){
+    select.append(el("option",{value:item.id,selected:item.id===value,disabled:!item.available,
+      text:`${item.title} · ${item.surface_title}${item.available ? "" : " (unavailable)"}`}));
+  }
+  select.onchange=event=>onPick(event.target.value);
+  return el("label",{},[document.createTextNode(label),select]);
+}
+function renderJoinView(){
+  const head=el("div",{class:"surface-head"},[el("div",{},[
+    el("h1",{text:"Join height records"}),
+    el("p",{class:"meta",text:"Place two saved relative-height records, each with its own zero, on one millimetre grid."})])]);
+  const left=recordById(joinState.left), right=recordById(joinState.right);
+  const bar=el("div",{class:"joinbar"},[
+    joinRecordCard("Left record", left, "left"),
+    joinRecordCard("Right record", right, "right"),
+  ]);
+  const controls=el("section",{class:"tools",id:"join-controls",style:"margin:0 30px;max-width:none"},[
+    el("h2",{text:"Marked positions"}),
+    el("p",{class:"meta",text:"Click the same engraved features in the same order on both images. Three or more well-spread pairs fix rotation and size; marks with observed height on both records also fix the vertical datum."}),
+    el("div",{class:"row"},[
+      button("Clear marks",()=>{joinState.pairs=[];renderJoinView();}),
+      button("Undo last pair",()=>{joinState.pairs.pop();renderJoinView();}),
+    ]),
+    joinPairTable(),
+    el("div",{class:"split"},[joinNumber("sample_mm","Output sampling (mm)",.25,.02,5,.01),
+      joinNumber("agreement_mm","Agreement limit (mm)",.05,.002,5,.005)]),
+    el("div",{class:"split"},[joinNumber("contours_mm","Contour interval (mm)",.08,.005,5,.005),
+      joinSelect("datum","Vertical datum",[["marks","Matched marks"],["overlap","Shared overlap"],["manual","Entered offset"]],"marks")]),
+    joinNumber("offset_mm","Entered vertical offset (mm)",0,-50,50,.01),
+    el("div",{class:"row"},[button("Preview join",()=>submitJoin(false),{class:"solid",id:"join-preview"}),
+      button("Save joined height",()=>submitJoin(true),{id:"join-save"})]),
+  ]);
+  const results=el("section",{class:"results",id:"join-results"});
+  root.replaceChildren(head,bar,controls,results,savedJoinsPanel());
+  if(joinState.result) renderReport(results,joinState.result);
+  drawMarks();
+}
+function joinRecordCard(label, record, side){
+  const card=el("section",{class:"stage"});
+  card.append(el("div",{class:"stage-actions"},[el("h2",{text:label}),
+    el("span",{class:"meta",text:record?.available ? `${record.size_mm[0]} × ${record.size_mm[1]} mm · ${record.size_px[0]} × ${record.size_px[1]} px` : "No usable record"})]));
+  card.append(recordSelect("Choose record", record?.id || "", value=>{
+    joinState[side]=value; joinState.pairs=[]; joinState.result=null; renderJoinView();
+  }));
+  if(record?.available){
+    const layer=el("div",{class:"mark-stage",id:`mark-${side}`},[el("img",{src:record.preview,alt:record.title,draggable:false})]);
+    const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+    svg.setAttribute("viewBox","0 0 1000 1000"); svg.setAttribute("preserveAspectRatio","none");
+    layer.append(svg);
+    layer.onpointerdown=event=>{
+      if(!joinState.left || !joinState.right || joinState.left===joinState.right) return;
+      const point=onLayer(event,layer);
+      addMark(side, point);
+    };
+    card.append(layer);
+    card.append(el("p",{class:"meta",text:`Recorded zero and scale are preserved. Marks are stored in this record's own mm frame.`}));
+  }
+  return card;
+}
+function addMark(side, point){
+  const record=recordById(side==="left" ? joinState.left : joinState.right);
+  const mm=[Number((point[0]*record.size_mm[0]).toFixed(3)), Number((point[1]*record.size_mm[1]).toFixed(3))];
+  const open=joinState.pairs.length && joinState.pairs[joinState.pairs.length-1][side]===null
+    ? joinState.pairs[joinState.pairs.length-1] : null;
+  if(open){ open[side]=mm; }
+  else joinState.pairs.push({left:side==="left"?mm:null, right:side==="right"?mm:null});
+  renderJoinView();
+}
+function pairPoints(){
+  return {
+    left: joinState.pairs.filter(p=>p.left).map(p=>[p.left[0]/recordById(joinState.left).size_mm[0], p.left[1]/recordById(joinState.left).size_mm[1]]),
+    right: joinState.pairs.filter(p=>p.right).map(p=>[p.right[0]/recordById(joinState.right).size_mm[0], p.right[1]/recordById(joinState.right).size_mm[1]]),
+  };
+}
+function joinPairTable(){
+  const rows=joinState.pairs.map((pair,i)=>{
+    const cell=v=>v?`${v[0].toFixed(1)}, ${v[1].toFixed(1)} mm`:"— click one";
+    return el("div",{class:"pair"},[el("span",{text:`Pair ${i+1}`}),el("b",{text:`L ${cell(pair.left)}`}),el("b",{text:`R ${cell(pair.right)}`})]);
+  });
+  return el("div",{class:"pairs"},rows.length?rows:[el("span",{text:"No marks yet."})]);
+}
+function joinNumber(key,label,value,lo,hi,step){
+  return formField(label,key,value,{type:"number",min:lo,max:hi,step:step ?? "any"});
+}
+function joinSelect(key,label,choices,preferred){
+  const select=el("select",{"aria-label":label});
+  for(const [id,title] of choices) select.append(el("option",{value:id,text:title,selected:id===preferred}));
+  return el("label",{},[document.createTextNode(label),select]);
+}
+function joinOptions(){
+  const form=document.querySelector("#join-controls");
+  const value=name=>Number(form.querySelector(`[name="${name}"]`).value);
+  const selectValue=name=>form.querySelector(`select[aria-label="${name}"]`).value;
+  return {sample_mm:value("sample_mm"), agreement_mm:value("agreement_mm"), contours_mm:value("contours_mm"),
+    datum:selectValue("Vertical datum"), offset_mm:value("offset_mm")};
+}
+async function submitJoin(retain){
+  const points=pairPoints();
+  if(points.left.length!==points.right.length) throw new Error("Finish the half-marked pair, or undo it.");
+  if(points.left.length<3) throw new Error("Mark at least three matched positions on each record.");
+  const body={title:`${recordById(joinState.left).title} + ${recordById(joinState.right).title}`,
+    left:joinState.left,right:joinState.right,points,options:joinOptions(),retain};
+  note(retain?"Saving the joined height…":"Aligning the two records…");
+  const target=query("join-preview"); if(target) target.disabled=true;
+  try{
+    const output=await api("/api/joins",json("POST",body));
+    joinState.result=output;
+    renderReport(query("join-results"),output);
+    if(retain){ await refreshJoinData(); joinState.opened=output.join || null; joinState.result=output; renderJoinView(); }
+    note(retain?"Joined height saved and ready to download.":"Join preview ready.");
+  } finally {if(target) target.disabled=false;}
+}
+function drawMarks(){
+  for(const side of ["left","right"]){
+    const layer=document.querySelector(`#mark-${side} svg`);
+    if(!layer) continue;
+    layer.replaceChildren();
+    const record=recordById(side==="left" ? joinState.left : joinState.right);
+    if(!record) continue;
+    joinState.pairs.forEach((pair,index)=>{
+      const mm=pair[side]; if(!mm) return;
+      const x=mm[0]/record.size_mm[0]*1000, y=mm[1]/record.size_mm[1]*1000;
+      const circle=document.createElementNS("http://www.w3.org/2000/svg","circle");
+      circle.setAttribute("cx",x); circle.setAttribute("cy",y); circle.setAttribute("r",9);
+      circle.setAttribute("fill","none"); circle.setAttribute("stroke","#8bd4b7"); circle.setAttribute("stroke-width",4);
+      const label=document.createElementNS("http://www.w3.org/2000/svg","text");
+      label.setAttribute("x",x+13); label.setAttribute("y",y+5); label.setAttribute("fill","#8bd4b7"); label.setAttribute("font-size","26");
+      label.textContent=String(index+1);
+      layer.append(circle,label);
+    });
+  }
+}
+
+function savedJoinsPanel(){
+  const list=el("div",{class:"join-list"});
+  for(const item of joinState.joins){
+    list.append(button(item.title,()=>openSavedJoin(item.id),{"aria-pressed":item.id===joinState.opened?.id}));
+  }
+  const card=el("section",{class:"record-card"},[el("h2",{text:"Saved joined heights"}),
+    list.children.length?list:el("p",{class:"meta",text:"No joined heights saved yet."})]);
+  const detail=el("section",{class:"results",id:"saved-join"});
+  if(joinState.opened) renderSavedJoin(detail,joinState.opened);
+  return el("div",{class:"joins3"},[card,detail]);
+}
+async function openSavedJoin(id){
+  const reply=await api(`/api/joins/${id}`);
+  joinState.opened=reply.join;
+  const target=query("saved-join");
+  if(target) renderSavedJoin(target,reply.join);
+  else renderJoinBrowse(reply.join);
+}
+function renderSavedJoin(target, join){
+  const metrics=[["Title",join.title],["Output",`${join.grid.size_px[0]} × ${join.grid.size_px[1]} px @ ${join.grid.spacing_mm} mm`],
+    ["Extent",`origin ${join.grid.origin_mm.map(v=>v.toFixed(2)).join(", ")} mm`],
+    ["Left record",join.left.title],["Right record",join.right.title],
+    ["Fitted rotation",`${join.transform.rotation_deg}°`],["Fitted scale",join.transform.scale],
+    ["Vertical datum",join.datum.method],
+    ["Island offsets",join.datum.island_offsets.map(o=>`right island ${o.right_island}: ${o.offset_mm} mm`).join(" · ") || "—"],
+    ["Overlap",`${join.overlap.cells} cells · ${join.overlap.conflict_cells} disagree`],
+    ["Identity",join.identity]];
+  const dl=el("dl",{class:"metrics"},metrics.map(([k,v])=>el("div",{},[el("dt",{text:k}),el("dd",{text:asText(v)})])));
+  const downloads=el("div",{class:"row"});
+  for(const file of join.files){
+    if(file.mime==="image/png") downloads.append(link(file.name,file.url,{class:"action",download:file.name}));
+    else downloads.append(link(file.name,file.url,{class:"action",download:file.name}));
+  }
+  const readout=joinReadoutForm(join);
+  target.replaceChildren(el("h2",{text:"Saved joined height"}),
+    el("p",{class:"muted",text:"Heights are relative to the left record. Disagreeing overlap is blank; use the source readout below to see both readings."}),
+    dl,downloads,readout);
+}
+function joinReadoutForm(join){
+  const field=jsonField("Readout positions (mm x,y, or normalized)",`points`,[[Math.round(join.grid.extent_mm[0]+2),Math.round(join.grid.extent_mm[1]+2)],
+    [Math.round((join.grid.extent_mm[0]+join.grid.extent_mm[2])/2),Math.round((join.grid.extent_mm[1]+join.grid.extent_mm[3])/2)]]);
+  const space=selectField("Position space","space",[["mm","Millimetres"],["normalized","Normalized"]],"mm");
+  const out=el("div",{id:"join-readout-out"});
+  const run=button("Read these positions",async()=>{
+    const text=field.querySelector("textarea").value;
+    let points; try{points=JSON.parse(text);}catch{throw new Error("Check the coordinate array.");}
+    const reply=await api(`/api/joins/${join.id}/readout`,json("POST",{points,space:space.querySelector("select").value}));
+    out.replaceChildren(table(reply.positions.map(row=>({
+      point:row.point, at:row.query_mm, source:row.source, joined_mm:row.joined_height_mm,
+      left_record:row.left.record, left_island:row.left.island, left_mm:row.left.height_mm,
+      right_record:row.right.record, right_island:row.right.island,
+      right_measured_mm:row.right.native_height_mm, right_offset_mm:row.right.island_offset_mm,
+      right_adjusted_mm:row.right.adjusted_height_mm, difference_mm:row.difference_mm,
+      why:row.explanation}))));
+  },{class:"solid"});
+  return el("div",{class:"inputs"},[el("h3",{text:"Where did a reading come from?"}),field,space,
+    el("div",{class:"row"},[run]),out]);
+}
+function renderJoinBrowse(join){
+  root.replaceChildren(el("div",{class:"surface-head"},[el("div",{},[el("h1",{text:join.title}),
+    el("p",{class:"meta",text:"Saved joined height"})]),
+    button("Back to joining",()=>guarded(openJoinView),{class:"quiet"})]),
+    savedJoinsPanel());
+}

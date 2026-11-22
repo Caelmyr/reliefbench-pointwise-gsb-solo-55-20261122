@@ -12,6 +12,11 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .archive import build_packet, verify_packet
 from .demo import DEMOS, cover, sample
+from .joins import available as height_records
+from .joins import build as join_heights
+from .joins import manifest_for as join_manifest
+from .joins import preview_record as height_preview
+from .joins import readout as join_readout
 from .models import (CaptureSpec, CropSpec, Point, Problem, SurfaceSpec, choice, fields, filename,
                      flag, identifier, mapping, text, whole)
 from .printbook import report_pdf
@@ -243,6 +248,79 @@ def register_transfer(app, library, work):
         return saved, 201
 
 
+def register_joins(app, library, work):
+    def resolved(join):
+        for part in join["files"]:
+            part["url"] = f'/api/joins/{join["id"]}/files/{part["key"]}'
+        return join
+
+    @app.get("/api/heights")
+    def heights():
+        return {"items": height_records(library)}
+
+    @app.get("/api/heights/<hid>/preview.png")
+    def height_picture(hid):
+        with work.enter():
+            return resource(height_preview(library, identifier(hid)), "image/png", "height-record.png")
+
+    @app.post("/api/joins")
+    def create_join():
+        obj = data()
+        fields(obj, "title", "left", "right", "points", "options", "retain")
+        retain = flag(obj.get("retain", False), "Retain joined height")
+        title = text(obj.get("title", "Joined height"), "Joined height title")
+        left = identifier(obj.get("left"), "Left height record")
+        right = identifier(obj.get("right"), "Right height record")
+        points = mapping(obj.get("points"), "Marked positions")
+        options = mapping(obj.get("options", {}), "Join settings")
+        with work.enter():
+            result, joined = join_heights(library, left, right, points, options)
+            payload = result.public({"left": left, "right": right})
+            if retain:
+                record = library.save_join(title, left, right, join_manifest(joined), result.assets)
+                payload["join"] = resolved(library.get_join(record["id"]))
+                return payload, 201
+        return payload
+
+    @app.get("/api/joins")
+    def joins():
+        return {"items": [{"id": item["id"], "title": item["title"], "left_id": item["left_id"],
+                           "right_id": item["right_id"], "created_at": item["created_at"]}
+                          for item in library.joins()]}
+
+    @app.get("/api/joins/<jid>")
+    def join_details(jid):
+        join = library.get_join(identifier(jid))
+        return {"join": resolved(join)}
+
+    @app.get("/api/joins/<jid>/files/<name>")
+    def join_media(jid, name):
+        media, mime, actual = library.join_asset(identifier(jid), identifier(name))
+        download = request.args.get("download") == "1" or mime != "image/png"
+        return resource(media, mime, actual, download)
+
+    @app.get("/api/joins/<jid>/grid")
+    def join_arrays(jid):
+        join = library.get_join(identifier(jid))
+        raw, _mime, name = library.join_asset(identifier(jid), "grid-file")
+        return resource(raw, "application/octet-stream", name, True)
+
+    @app.post("/api/joins/<jid>/readout")
+    def join_points(jid):
+        obj = data()
+        fields(obj, "points", "space")
+        space = choice(obj.get("space", "mm"), "Readout space", ("mm", "normalized"))
+        points = obj.get("points")
+        if not isinstance(points, list) or not 1 <= len(points) <= 80:
+            raise Problem("Choose one to eighty readout positions.")
+        values = [Point.parse(point, "Readout point", -1e6, 1e6) for point in points]
+        join = library.get_join(identifier(jid))
+        manifest = json.loads(library.join_asset(join["id"], "join-index")[0])
+        arrays = np.load(BytesIO(library.join_asset(join["id"], "grid-file")[0]))
+        return {"join_id": join["id"], "title": join["title"], "space": space,
+                "positions": join_readout(manifest, arrays, values, space)}
+
+
 def register_procedures(app, library):
     @app.get("/api/surfaces/<sid>/procedures")
     def get_procedures(sid):
@@ -341,6 +419,7 @@ def create_app(data_dir=None):
     register_results(app, library, work)
     register_transfer(app, library, work)
     register_procedures(app, library)
+    register_joins(app, library, work)
 
     @app.get("/")
     def homepage():
