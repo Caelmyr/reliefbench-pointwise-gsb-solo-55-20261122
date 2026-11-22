@@ -54,6 +54,7 @@ class Result:
     rows: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     assets: dict = field(default_factory=dict)
+    payload: dict = field(default_factory=dict)
 
     @property
     def report(self):

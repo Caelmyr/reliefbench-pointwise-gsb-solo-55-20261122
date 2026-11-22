@@ -7,6 +7,7 @@ import json
 import os
 
 import numpy as np
+from PIL import Image
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
@@ -14,13 +15,14 @@ from .archive import build_packet, verify_packet
 from .demo import DEMOS, cover, sample
 from .models import (CaptureSpec, CropSpec, Point, Problem, SurfaceSpec, choice, fields, filename,
                      flag, identifier, mapping, text, whole)
+from .polarization import polarization_report
 from .printbook import report_pdf
 from .procedures import preview_procedure, save_procedure
 from .provenance import public_signature, require_match, seal
-from .raster import decode, png
+from .raster import decode, linear_to_srgb, png
 from .registration import Registration, examine_registration
 from .results import Result
-from .storage import Library
+from .storage import Library, utc as storage_utc
 from .visual import GOLD, MINT, flatten_rgb, overlay, scale_bar, split_visual
 from .transfer import export_capture_set, import_capture_set, inspect_capture_set
 from .workflow import catalog, run
@@ -281,6 +283,35 @@ def register_results(app, library, work):
                 saved = library.save_inspection(sid, title, result, evidence)
                 return {"record": saved, **result.public(evidence)}, 201
         return result.public(evidence)
+
+    @app.post("/api/surfaces/<sid>/polarization/derive")
+    def add_diffuse(sid):
+        obj = data()
+        fields(obj, "inputs", "title", "expected_preview")
+        sid = identifier(sid)
+        with work.enter():
+            result, evidence = run(library, sid, "polarization", mapping(obj["inputs"], "Inspection inputs"))
+            signature = seal(result, evidence)
+            require_match(obj["expected_preview"], signature)
+            payload = result.payload
+            if not payload:
+                raise Problem("This tool result cannot be added to the collection.", 409)
+            rgb = (np.clip(linear_to_srgb(payload["diffuse_rgb"]), 0., 1.) * 255).round().astype(np.uint8)
+            rgba = np.dstack((rgb, payload["diffuse_alpha"]))
+            buffer = BytesIO()
+            Image.fromarray(rgba, "RGBA").save(buffer, format="PNG", optimize=False)
+            title = text(obj.get("title"), "Diffuse image title", 120)
+            spec = CaptureSpec.parse({"title": title, "role": "diffuse", "camera": "Derived from polarized pair",
+                                      "note": ("Matte-anchored diffuse separation. Indeterminate pixels are transparent; "
+                                               "originals retained with two-source provenance.")[:700]})
+            provenance = {"derivation_kind": "polarization-diffuse", "tool": "polarization",
+                          "sources": [payload["parallel"], payload["cross"]], "gain": payload["gain"],
+                          "reference_box": payload["reference"], "specular_floor": payload["spec_floor"],
+                          "highlight_code": payload["highlight_code"], "classification": payload["counts"],
+                          "preview_signature": signature["preview"], "derived_at": storage_utc()}
+            record, derivation = library.add_derived_capture(sid, title, buffer.getvalue(), spec,
+                                                             "polarization-diffuse", provenance)
+        return {"capture": record, "derivation": derivation}, 201
 
     @app.get("/api/records/<rid>")
     def read_inspection(rid):

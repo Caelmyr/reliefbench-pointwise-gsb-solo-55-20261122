@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 
-from .models import Problem
+from .models import Problem, filename
 from .raster import decode
 
 
@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS procedure (
     created_at TEXT NOT NULL,
     UNIQUE(surface_id, title)
 );
+CREATE TABLE IF NOT EXISTS derived_capture (
+    id TEXT PRIMARY KEY,
+    capture_id TEXT NOT NULL REFERENCES capture(id),
+    surface_id TEXT NOT NULL REFERENCES surface(id),
+    kind TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS derived_capture_surface ON derived_capture(surface_id);
 CREATE TABLE IF NOT EXISTS review_event (
     id INTEGER PRIMARY KEY,
     inspection_id TEXT NOT NULL REFERENCES inspection(id),
@@ -246,7 +255,10 @@ class Library:
                 cap["registrations"] = [expose_registration(entry) for entry in registrations]
             inspections = conn.execute("SELECT * FROM inspection WHERE surface_id=? ORDER BY created_at DESC",
                                        (surface_id,))
+            derived = conn.execute("SELECT * FROM derived_capture WHERE surface_id=? ORDER BY created_at",
+                                   (surface_id,))
             return {"surface": surface, "captures": captures, "inspections": [expose_inspection(i) for i in inspections],
+                    "derivations": [self._expose_derivation(row) for row in derived],
                     "procedures": self._procedures(conn, surface_id)}
 
     def edit_surface(self, surface_id, expected, spec):
@@ -306,6 +318,19 @@ class Library:
         if len(data) != row["size"] or sha256(data).hexdigest() != row["hash"]:
             raise Problem("The stored image did not match its content fingerprint.", 409)
         return data, row["mime"]
+
+    @staticmethod
+    def _expose_derivation(row):
+        return {"id": row["id"], "capture_id": row["capture_id"], "surface_id": row["surface_id"],
+                "kind": row["kind"], "created_at": row["created_at"], **json.loads(row["provenance"])}
+
+    def add_derived_capture(self, surface_id, title, png_bytes, spec, kind, provenance):
+        record = self.add_capture(surface_id, filename(title) + ".png", png_bytes, spec)
+        with self.connect(writing=True) as conn:
+            conn.execute("INSERT INTO derived_capture VALUES (?,?,?,?,?,?)",
+                         (key(), record["id"], surface_id, kind, dumps(provenance), utc()))
+        derived = self.get_surface(surface_id)["derivations"]
+        return record, next(item for item in derived if item["capture_id"] == record["id"])
 
     def registrations(self, capture_id):
         with self.connect() as conn:

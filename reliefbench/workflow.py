@@ -9,6 +9,7 @@ from .lamp_plan import DEFAULT_AZIMUTHS, DEFAULT_ELEVATIONS, DEFAULT_KEEPOUT, pl
 from .layout_measure import DEFAULT_FIGURES, mark_geometry
 from .physical_scale import ruler_readout
 from .models import JobRequest, Problem
+from .polarization import polarization_report
 from .quality import focus_scout, held_out_light, physical_probe, stack_support
 from .sampling import camera_trace, frames_review, glare_census, light_patch, overlap_review
 from .shapetools import coverage, gradient_check, height_report, normal_report, physical_section, relighting
@@ -99,6 +100,12 @@ TOOLS = {
                    num("known_step_mm", "Measured ticks, mm", 5., .1, 100.),
                    num("band_mm", "Read band, mm", 2.6, .3, 25.),
                    tick("dark_ticks", "Ticks are darker", True))),
+    "polarization": Tool("Polarized diffuse / specular", "Capture calibration", "any", 2, 2,
+                         "Separate matte diffuse colour and glazed specular reflection from parallel and cross polarized photographs.",
+                         polarization_report,
+                         (points("reference", "Shared matte reference box", [.12, .12, .26, .26]),
+                          num("parallel_order", "Parallel polarized photo in selected order (1 or 2)", 1, 1, 2, 1),
+                          num("highlight_code", "Highlight range code threshold", .92, .60, 1., .005))),
     "dark-check": Tool("Camera dark check", "Capture calibration", "any", 1, 8,
                        "Compare sensor darkness, spatial and temporal variation.", dark_report,
                        (num("tiles", "Dark tiles per side", 8, 3, 16),

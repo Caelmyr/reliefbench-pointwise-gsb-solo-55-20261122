@@ -214,9 +214,20 @@ function sourcePane() {
       state.active=photo.id; state.edit=null; state.proposal=null; state.corners=[]; renderSurface();
     },{"aria-pressed":photo.id===active});
     switcher.append(el("small",{text:photo.metadata.role}));
+    const derivation=(state.item.derivations||[]).find(d=>d.capture_id===photo.id);
+    if(derivation) switcher.append(el("small",{class:"derived-tag",text:"derived · " + human(derivation.kind)}));
     pane.append(el("div",{class:"capture"},[check,switcher]));
   }
   return pane;
+}
+function derivationPanel(d){
+  const sourceRows=(d.sources||[]).map(s=>({source:s.title, role:s.registration_id, sha256:s.hash}));
+  return el("details",{class:"derivation-panel",open:true},[
+    el("summary",{text:`Derived ${human(d.kind)} · provenance`}),
+    el("p",{class:"meta",text:`Reference box ${JSON.stringify(d.reference_box)} · gain ${JSON.stringify(d.gain)} · specular floor ${d.specular_floor}`}),
+    table(sourceRows),
+    table([{status:"classification", ...d.classification}]),
+  ]);
 }
 function stagePane() {
   const photo=state.item.captures.find(c=>c.id===state.active);
@@ -248,6 +259,8 @@ function stagePane() {
     el("span",{text:`${photo.image.size.join(" × ")} pixels · ${photo.image.encoding}`}),
     link("Original file",`/api/captures/${photo.id}/image/original`),
   ]));
+  const derivation=(state.item.derivations||[]).find(d=>d.capture_id===photo.id);
+  if(derivation) caption.append(derivationPanel(derivation));
   layer.onpointerdown=event=>{
     if(state.edit!=="region") return;
     state.anchor=logicalPoint(event,layer); layer.setPointerCapture(event.pointerId);
@@ -386,8 +399,30 @@ function renderReport(target, output){
     } else if(uri) downloads.append(link(file.name,uri,{class:"action",download:file.name}));
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
+  const derive = report.kind==="polarization" && output.inputs && output.evidence?.data_signature?.identity
+    ? deriveDiffuseBar(output) : null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
-    metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+    metrics,figures,downloads,derive,table(report.rows),warnings].filter(Boolean));
+}
+function deriveDiffuseBar(output){
+  const sig=output.evidence.data_signature.identity;
+  const sid=state.item.surface.id;
+  return el("div",{class:"derive-bar"},[
+    el("h3",{text:"Confirmed diffuse"}),
+    el("p",{class:"muted",text:"Adds only definite diffuse pixels; clipped and indeterminate sites stay transparent. Both polarized sources are recorded and every original photograph is retained."}),
+    button("Add usable diffuse to collection",()=>deriveDiffuseDialog(sid,output.inputs,sig),{class:"solid"}),
+  ]);
+}
+function deriveDiffuseDialog(sid,inputs,sig){
+  dialog("Add diffuse image to this collection",[
+    formField("Diffuse image title","title","Usable diffuse separation",{required:true,maxlength:120}),
+  ],async form=>{
+    const reply=await api(`/api/surfaces/${sid}/polarization/derive`,
+      json("POST",{inputs,title:formValues(form).title,expected_preview:sig}));
+    await openSurface(sid,true);
+    state.last=null;
+    note("Diffuse image added with two-source provenance; originals unchanged.");
+  },"Add to collection");
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});
