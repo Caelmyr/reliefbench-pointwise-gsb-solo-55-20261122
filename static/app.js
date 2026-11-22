@@ -370,6 +370,151 @@ function table(rows){
   const all=el("tbody",{},rows.slice(0,800).map(row=>el("tr",{},cols.map(k=>el("td",{text:asText(row[k])})))));
   return el("details",{},[el("summary",{text:`Observations (${rows.length} rows)`}),el("div",{class:"table"},[el("table",{},[head,all])])]);
 }
+async function decodeProbe(file){
+  if(!file) return null;
+  try {
+    if(file.data?.startsWith("data:application/json")) {
+      return JSON.parse(atob(file.data.split(",")[1]));
+    }
+    if(file.url) return await api(file.url);
+  } catch { return null; }
+  return null;
+}
+function bandProbePanel(probe){
+  const stations=probe.stations;
+  const offsets=probe.band.offsets_mm;
+  const panel=el("div",{class:"band-probe",id:"band-probe",hidden:true});
+  const title=el("h3",{text:"Band readout at selected station"});
+  panel.append(title);
+  const facts=el("dl",{class:"metrics"});
+  panel.append(facts);
+  const memberHead=el("thead",{},[el("tr",{},["Band line","Offset mm","Measured","Island","Height mm","Used in median"]
+    .map(t=>el("th",{text:t})))]);
+  const memberBody=el("tbody",{});
+  panel.append(el("div",{class:"table"},[el("table",{},[memberHead,memberBody])]));
+  const hint=el("p",{class:"muted",text:"Click a position on the section-height curve to inspect the strip samples behind it."});
+  panel.append(hint);
+
+  function show(index){
+    const station=stations[index];
+    panel.hidden=false;
+    facts.replaceChildren(...[
+      ["Station", `${station.station+1} / ${stations.length}`],
+      ["Distance from A (mm)", station.distance_mm],
+      ["Surface point (x, y)", station.surface_point.join(", ")],
+      ["Single-line height (mm)", station.single_line_height_mm ?? "empty"],
+      ["Band median height (mm)", station.band_height_mm ?? "empty"],
+      ["Central support", station.centre_supported ? "yes" : "no"],
+      ["Band members measured", `${station.band_members_measured} / ${probe.band.lines}`],
+      ["Status", station.usable ? "usable" : (station.empty_reason || "empty")],
+    ].map(([k,v])=>el("div",{},[el("dt",{text:k}),el("dd",{text:asText(v)})])));
+    memberBody.replaceChildren();
+    const centre=(offsets.length-1)/2;
+    for(let line=0; line<offsets.length; line++){
+      const measured=Boolean(probe.line_visible[line][index]);
+      const island=probe.line_islands[line][index];
+      const height=probe.line_heights[line][index];
+      const sameIsland=island===station.connected_island;
+      const used=measured && station.usable && sameIsland;
+      memberBody.append(el("tr",{class:used?"used":(measured?"other-slope":"missing")},[
+        el("td",{text:line===centre ? `${line+1} (centre)` : String(line+1)}),
+        el("td",{text:String(offsets[line])}),
+        el("td",{text:measured?"yes":"no"}),
+        el("td",{text:island?String(island):"–"}),
+        el("td",{text:height===null||Number.isNaN(height)?"empty":String(height)}),
+        el("td",{text:used?"yes":(measured&&!sameIsland?"excluded: other slope":"no")}),
+      ]));
+    }
+    panel.dataset.station=String(index);
+  }
+  return {panel,show,stations};
+}
+function imageContentRect(img){
+  const box=img.getBoundingClientRect();
+  if(!img.naturalWidth) return box;
+  const scale=Math.min(box.width/img.naturalWidth, box.height/img.naturalHeight);
+  const w=img.naturalWidth*scale, h=img.naturalHeight*scale;
+  return {left:box.left+(box.width-w)/2, top:box.top+(box.height-h)/2, width:w, height:h};
+}
+function fitOverlay(img, svg){
+  const parent=img.parentElement.getBoundingClientRect();
+  const rect=imageContentRect(img);
+  svg.style.left=`${rect.left-parent.left}px`;
+  svg.style.top=`${rect.top-parent.top}px`;
+  svg.style.width=`${rect.width}px`;
+  svg.style.height=`${rect.height}px`;
+}
+function refitOverlays(){
+  document.querySelectorAll("svg.band-marker,svg.curve-crosshair").forEach(svg=>{
+    const img=svg.previousElementSibling;
+    if(img?.tagName==="IMG" && img.complete) fitOverlay(img, svg);
+  });
+}
+window.addEventListener("resize", refitOverlays);
+async function attachBandProbe(figures, files){
+  const probeFile=files.find(f=>f.key==="section-band-probe");
+  const probe=await decodeProbe(probeFile);
+  if(!probe) return;
+  const curveFigure=[...figures.querySelectorAll("figure")]
+    .find(fig=>fig.dataset.assetKey==="section-height");
+  const mapFigure=[...figures.querySelectorAll("figure")]
+    .find(fig=>fig.dataset.assetKey==="section-location");
+  if(!curveFigure) return;
+  const curve=curveFigure.querySelector("img");
+  curve.classList.add("probe-target");
+  const {panel,show,stations}=bandProbePanel(probe);
+  figures.after(panel);
+
+  curve.onclick=event=>{
+    const rect=imageContentRect(curve);
+    const fraction=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+    show(Math.round(fraction*(stations.length-1)));
+    const index=Number(panel.dataset.station);
+    let cross=curveFigure.querySelector("svg.curve-crosshair");
+    if(!cross){
+      cross=document.createElementNS("http://www.w3.org/2000/svg","svg");
+      cross.setAttribute("viewBox","0 0 1000 1000");
+      cross.setAttribute("preserveAspectRatio","none");
+      cross.classList.add("curve-crosshair");
+      curve.after(cross);
+    }
+    fitOverlay(curve, cross);
+    cross.replaceChildren();
+    const ns="http://www.w3.org/2000/svg";
+    const x=(index/(stations.length-1))*1000;
+    const vline=document.createElementNS(ns,"line");
+    vline.setAttribute("x1",x);vline.setAttribute("x2",x);vline.setAttribute("y1",0);vline.setAttribute("y2",1000);
+    vline.setAttribute("class","cross-line");
+    cross.append(vline);
+    if(mapFigure){
+      const mapImg=mapFigure.querySelector("img");
+      let svg=mapFigure.querySelector("svg.band-marker");
+      if(!svg){
+        svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+        svg.setAttribute("viewBox","0 0 1000 1000");
+        svg.setAttribute("preserveAspectRatio","none");
+        svg.classList.add("band-marker");
+        mapImg.after(svg);
+        mapImg.addEventListener("load",()=>fitOverlay(mapImg,svg));
+      }
+      fitOverlay(mapImg, svg);
+      const point=probe.stations[index].surface_point;
+      svg.replaceChildren();
+      // faint full parallel band lines so the reader sees the strip being sampled
+      const ns2="http://www.w3.org/2000/svg";
+      for(const line of probe.line_points){
+        const poly=document.createElementNS(ns2,"polyline");
+        poly.setAttribute("points",line.map(p=>p.map(n=>n*1000).join(",")).join(" "));
+        poly.setAttribute("class","band-read-line");
+        svg.append(poly);
+      }
+      const dot=document.createElementNS(ns,"circle");
+      dot.setAttribute("cx",point[0]*1000); dot.setAttribute("cy",point[1]*1000);
+      dot.setAttribute("r",11); dot.setAttribute("class","probe-dot");
+      svg.append(dot);
+    }
+  };
+}
 function renderReport(target, output){
   if(!target) return;
   const report=output.report;
@@ -381,13 +526,16 @@ function renderReport(target, output){
   for(const file of output.files||[]){
     const uri=file.url||file.data;
     if(file.mime==="image/png"&&uri){
-      figures.append(el("figure",{},[el("img",{src:uri,alt:human(file.key)}),
-        el("figcaption",{},[document.createTextNode(human(file.key)),link("Download",uri,{download:file.name})])]));
-    } else if(uri) downloads.append(link(file.name,uri,{class:"action",download:file.name}));
+      const figure=el("figure",{},[el("img",{src:uri,alt:human(file.key)}),
+        el("figcaption",{},[document.createTextNode(human(file.key)),link("Download",uri,{download:file.name})])]);
+      figure.dataset.assetKey=file.key;
+      figures.append(figure);
+    } else if(uri && file.key!=="section-band-probe") downloads.append(link(file.name,uri,{class:"action",download:file.name}));
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
     metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+  attachBandProbe(figures, output.files||[]).catch(error=>note(error.message||String(error),true));
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});

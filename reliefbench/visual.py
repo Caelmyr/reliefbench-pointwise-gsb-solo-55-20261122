@@ -106,13 +106,15 @@ def scale_bar(base, width_mm, unit="mm"):
 
 def overlay(base, items):
     result = base.convert("RGB").copy()
-    d = ImageDraw.Draw(result)
+    d = ImageDraw.Draw(result, "RGBA")
     width, height = result.size
     for shape, points, line, label in items:
         vertices = [(round(x * (width - 1)), round(y * (height - 1))) for x, y in points]
         if shape == "point":
             x, y = vertices[0]
             d.ellipse((x - 5, y - 5, x + 5, y + 5), fill=line, outline=PAPER, width=2)
+        elif shape == "polygon":
+            d.polygon(vertices, fill=(*line, 52), outline=line)
         elif shape == "closed":
             d.line([*vertices, vertices[0]], fill=line, width=2)
         else:

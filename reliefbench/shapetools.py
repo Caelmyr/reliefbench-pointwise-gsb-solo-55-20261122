@@ -3,11 +3,12 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+from .band_section import read_band, BandSpec
 from .heightfield import contour_levels, derivative_consistency, integrate
 from .lightmodel import (color_relit, compare_positions, directions, diversity, exposure_settings,
                          solve, spherical_coverage)
-from .models import Point, Problem, fields, flag, light_vector, number, rounded, whole
-from .raster import (line_samples, safe_fraction, sample_field, statistics, tiff_float)
+from .models import Problem, fields, flag, light_vector, number, rounded
+from .raster import (safe_fraction, statistics, tiff_float)
 from .results import Result
 from .visual import (COOL, DIVERGE, GOLD, HOT, MINT, Extent, Trace, contact_sheet, flatten_rgb,
                      heatmap, normals_image, overlay, plot, scale_bar, split_visual, support_image)
@@ -185,66 +186,68 @@ def _lighting_readout(field, direction):
     return returns
 
 
-def _profile_points(dataset, options):
-    a = Point.parse(options.get("start", [.16, .48]), "Section start")
-    b = Point.parse(options.get("end", [.84, .52]), "Section end")
-    if not (dataset.region.contains(a) and dataset.region.contains(b)):
-        raise Problem("Keep both section endpoints in the analysis rectangle.")
-    n = whole(options.get("samples", 210), "Section samples", 24, 720)
-    dist = dataset.scale.distance(a, b)
-    if dist < .2:
-        raise Problem("Place the section endpoints further apart.")
-    points = line_samples(a, b, n)
-    distance = np.linspace(0, dist, n)
-    return a, b, points, distance
-
-
-def _section_extent(normal_profile, heights, measured):
-    if measured.sum() < 8:
-        raise Problem("The chosen line misses most reconstructed surface support.")
-    rows = []
-    for i in range(len(heights)):
-        rows.append({
-            "height_mm": rounded(heights[i]) if measured[i] else None,
-            "incline_deg": rounded(normal_profile[i]) if measured[i] else None,
-            "usable": bool(measured[i]),
-        })
-    return rows
+def _section_map(dataset, height, spec, geometry):
+    shown = heatmap(height.height, height.visible,
+                    Extent.fit(height.height, height.visible, zero="symmetric"), DIVERGE, True)
+    items = [("polygon", geometry["footprint"], MINT, f"{spec.width_mm:g} mm band"),
+             ("line", [spec.start.public(), spec.end.public()], GOLD, "Centre A-B"),
+             ("point", [spec.start.public()], MINT, "A"), ("point", [spec.end.public()], HOT, "B")]
+    offsets = np.asarray(geometry["offsets_mm"])
+    if offsets.size > 1:
+        edge = np.asarray(geometry["line_points"])
+        items.append(("line", edge[0].tolist(), COOL, None))
+        items.append(("line", edge[-1].tolist(), COOL, None))
+    return _physical_map(dataset, overlay(shown, items))
 
 
 def physical_section(dataset, options):
-    fields(options, "start", "end", "samples", "show_angles")
+    fields(options, "start", "end", "samples", "show_angles", "band_width_mm", "band_lines")
     show_angles = flag(options.get("show_angles", True), "Show line inclination")
-    a, b, points, distance = _profile_points(dataset, options)
+    spec = BandSpec.parse(dataset, options)
     field = solve(dataset)
     height = integrate(field, dataset.scale)
-    values, vis = height.at(points)
-    incline, angle_ok = sample_field(field.angular_incline(), field.valid, points)
-    _, sample_islands = sample_field(height.island_labels, height.visible, points)
-    ids_y = np.minimum(height.visible.shape[0] - 1, (points[:, 1] * height.visible.shape[0]).astype(int))
-    ids_x = np.minimum(height.visible.shape[1] - 1, (points[:, 0] * height.visible.shape[1]).astype(int))
-    island = height.island_labels[ids_y, ids_x]
-    baseline = _section_extent(incline, values, vis & angle_ok & sample_islands)
-    rows = [{"distance_mm": rounded(s), "surface_point": [rounded(x) for x in p],
-             "connected_island": int(i) if base["usable"] else None, **base}
-            for p, s, i, base in zip(points, distance, island, baseline, strict=True)]
-    extent_rows = statistics(values, vis)
-    validated = [r for r in rows if r["usable"]]
-    result = Result("section", "Physical cross-section",
-                    "Read a line of reconstructed height with unsupported spans shown as gaps.",
-                    {"section_length_mm": rounded(distance[-1]), "tested_samples": len(points),
-                     "visible_samples": len(validated), "connected_islands_along_line": sorted({r["connected_island"] for r in validated}),
-                     "relative_height_range_mm": [extent_rows["min"], extent_rows["max"]]}, rows)
-    shown = heatmap(height.height, height.visible, Extent.fit(height.height, height.visible, zero="symmetric"),
-                    DIVERGE, True)
-    line = [("line", [a.public(), b.public()], GOLD, "A-B section"),
-            ("point", [a.public()], MINT, "A"), ("point", [b.public()], HOT, "B")]
-    result.image("section-location", _physical_map(dataset, overlay(shown, line)))
-    height_values = np.where(vis, values, np.nan)
-    result.image("section-height", plot([Trace("Relative height", distance, height_values)], "Distance from A (mm)", "Height (mm)"))
+    band = read_band(dataset, field, height, spec)
+    distance = band["distance"]
+
+    result = Result("section", "Physical cross-section with read band",
+                    "Compare the original single line against a median across parallel band lines; "
+                    "stations without central support or on an opposite slope stay empty.",
+                    band["metrics"], band["rows"])
+    result.image("section-location", _section_map(dataset, height, spec, band["geometry"]))
+
+    single = np.where(band["centre_supported"], band["centre_values"], np.nan)
+    traces = [Trace("Band median", distance, band["band_height"], MINT),
+              Trace("Single line", distance, single, GOLD)]
+    result.image("section-height", plot(traces, "Distance from A (mm)", "Height (mm)"))
     if show_angles:
-        result.image("section-slope", plot([Trace("Inclination", distance, np.where(angle_ok & vis, incline, np.nan), COOL)],
-                                         "Distance from A (mm)", "Angle (degrees)", y_window=(0, max(10, float(incline[angle_ok].max()) + 2))))
-    if len({r["connected_island"] for r in validated}) > 1:
+        incline = np.where(band["angle_ok"] & band["centre_supported"], band["incline"], np.nan)
+        peak = float(np.nanmax(incline)) if np.isfinite(incline).any() else 10.
+        result.image("section-slope", plot([Trace("Inclination", distance, incline, COOL)],
+                                           "Distance from A (mm)", "Angle (degrees)",
+                                           y_window=(0, max(10., peak + 2))))
+
+    probe = {
+        "tool": "section-band",
+        "band": {"width_mm": spec.width_mm, "lines": spec.lines,
+                 "offsets_mm": band["geometry"]["offsets_mm"],
+                 "footprint": band["geometry"]["footprint"],
+                 "start": spec.start.public(), "end": spec.end.public()},
+        "stations": band["rows"],
+        "line_points": band["geometry"]["line_points"],
+        "line_visible": band["geometry"]["line_visible"],
+        "line_islands": band["geometry"]["line_islands"],
+        "line_heights": band["geometry"]["line_heights"],
+        "distance_mm": [rounded(float(v)) for v in distance],
+    }
+    result.document("section-band-probe", probe)
+    result.add("section-band-support", "section-band-support.tiff", "image/tiff",
+               tiff_float(np.where(height.visible, height.island_labels, np.nan), height.visible))
+    if len(band["metrics"]["connected_islands_along_section"]) > 1:
         result.warnings.append("The line crosses multiple independent height datums.")
+    if band["metrics"]["empty_stations"]:
+        result.warnings.append(
+            f"{band['metrics']['empty_stations']} stations are left open "
+            f"({band['metrics']['no_central_support_stations']} without central support, "
+            f"{band['metrics']['off_slope_stations']} on an opposite slope, "
+            f"{band['metrics']['sparse_band_stations']} with too few band members).")
     return result.table("physical-cross-section")
