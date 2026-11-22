@@ -7,6 +7,7 @@ from .color_reference import DEFAULT_CHART, chart_report
 from .dataset import DataSet
 from .lamp_plan import DEFAULT_AZIMUTHS, DEFAULT_ELEVATIONS, DEFAULT_KEEPOUT, plan_lamps
 from .layout_measure import DEFAULT_FIGURES, mark_geometry
+from .mirrorball import mirror_ball_report
 from .physical_scale import ruler_readout
 from .models import JobRequest, Problem
 from .quality import focus_scout, held_out_light, physical_probe, stack_support
@@ -124,6 +125,10 @@ TOOLS = {
                         points("keepout", "Blocked azimuth intervals", DEFAULT_KEEPOUT),
                         num("surface_threshold", "Preferred surface response", .34, .1, .85),
                         num("count", "New mount proposals", 3, 1, 5), tick("prefer_support", "Prefer low-response coverage", True))),
+    "mirror-ball": Tool("Mirror ball lamp angles", "Light & surface", "any", 1, 12,
+                         "Infer each lamp direction from highlights marked on a round mirror ball.",
+                         mirror_ball_report,
+                         (points("mirror_marks", "Mirror ball marks (ball centre, radius, highlight boxes)", []),)),
     "lights": Tool("Lamp geometry", "Light & surface", "raking", 3, 12,
                    "Review whether your physical lamp directions span the normal components.", coverage,
                    (tick("inspect_all", "List all light pairs", True),)),

@@ -15,11 +15,21 @@ The default address is `http://127.0.0.1:19958/`. The server mounts a Compose vo
 
 - Sensor acquisition: clipping and histograms, source alignment, native readout at marks, line traces, multi-photo support, local detail, physical measurements and ruler readback.
 - Reference photography: neutral and color standards, fixed-pattern dark checks, radial flat-field checks, preview of per-channel flat compensation.
-- Light and surface: lamp coverage and mount planning, marked response by angle, directional normals and reflectance, a withheld lamp check, slope consistency, relative height, contours and virtual lighting.
+- Light and surface: lamp coverage and mount planning, mirror ball lamp-angle inference, marked response by angle, directional normals and reflectance, a withheld lamp check, slope consistency, relative height, contours and virtual lighting.
 - Physical readout: topology features, material cells, line cross-sections, local texture amplitude and directional spectra. Retained data include CSV, PNG and relevant calibrated TIFF, OBJ, PLY or SVG.
 - Source history: four-corner planar registrations, named setup review, snapshot-safe inspections, immutable assets, review events, PDF handouts and independently checkable evidence and capture packets.
 
 The Slate and Ochre examples are generated. Their reference photographs include a ruler, color swatches, a flat field and a pair of dark reference exposures. Coordinates are normalized from the top-left. Azimuth is clockwise from image right with positive elevation toward the camera.
+
+### Mirror ball lamp angles
+
+When a lamp angle was not written down, photograph a round mirror ball beside the relief under that lamp and use **Mirror ball lamp angles**. On each selected photograph, mark the ball centre and an edge point to set its circle, then drag a box around every visible bright spot. The workbench reconstructs each lamp direction from the specular reflection geometry and reports:
+
+- `inferred` for an unclipped highlight with a brightness-weighted centre;
+- `bounded` when the centre is a clipped white block — the halo still gives the centre, while the box defines azimuth and elevation intervals;
+- `ambiguous` when two reflections are too close to separate — the reason is shown and the photograph's recorded lamp values are retained unchanged.
+
+The contact sheet overlays the ball circle and highlight boxes, and the polar plate shades the angular range each box still allows. Apply an angle to a photograph only after reviewing it; the suggestion card writes the chosen azimuth and elevation into that photograph's lamp settings, leaving the originals untouched until confirmed. The reconstruction assumes a near-orthographic view of a round ball centred at the relief.
 
 ## Limits and units
 

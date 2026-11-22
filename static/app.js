@@ -4,6 +4,7 @@ const notification = document.getElementById("notice");
 const state = {
   catalog: null, item: null, active: "", selected: new Set(), revisions: new Map(), tool: "normals",
   view: "work", region: null, edit: null, corners: [], proposal: null, last: null, opened: null,
+  marks: new Map(), draftBall: null,
 };
 
 function el(tag, attributes = {}, children = []) {
@@ -211,7 +212,7 @@ function sourcePane() {
     const check=el("input",{type:"checkbox",checked:state.selected.has(photo.id),"aria-label":`Use ${nameOf(photo)}`});
     check.onchange=()=>check.checked ? state.selected.add(photo.id) : state.selected.delete(photo.id);
     const switcher=button(nameOf(photo),()=>{
-      state.active=photo.id; state.edit=null; state.proposal=null; state.corners=[]; renderSurface();
+      state.active=photo.id; state.edit=null; state.proposal=null; state.anchor=null; state.draftBall=null; state.corners=[]; renderSurface();
     },{"aria-pressed":photo.id===active});
     switcher.append(el("small",{text:photo.metadata.role}));
     pane.append(el("div",{class:"capture"},[check,switcher]));
@@ -231,7 +232,9 @@ function stagePane() {
   layer.append(svg); caption.append(layer);
   const setMode=(type)=>{
     state.edit=type; state.corners=[]; state.proposal=null; layer.classList.add("editing");
-    note(type==="corners" ? "Click all four corners clockwise from the upper left." : "Drag a rectangle on the working coordinate view.");
+    if(type==="mirror-ball") note("Click the ball centre, then a point on its edge. Next drag boxes around bright spots.");
+    else if(type==="mirror-spot") note("Drag a rectangle around each lamp highlight on the mirror ball.");
+    else note(type==="corners" ? "Click all four corners clockwise from the upper left." : "Drag a rectangle on the working coordinate view.");
     drawLayer(svg);
   };
   const revisions=photo.registrations.map(r=>[r.id,`Registration v${r.revision}`]);
@@ -244,19 +247,60 @@ function stagePane() {
     button("Select region",()=>setMode("region")),
     button("Clear region",()=>{ state.region=null; drawLayer(svg); }),
   ]),set);
+  if(state.tool==="mirror-ball"){
+    const mark=activeMark();
+    caption.append(el("div",{class:"row"},[
+      button(mark.center ? "Re-mark mirror ball" : "Mark mirror ball",()=>{ state.anchor=null; state.proposal=null; state.marks.set(photo.id,{label:mark.label,center:null,radius:null,highlights:[]}); state.draftBall=null; setMode("mirror-ball"); }),
+      button("Add highlight box",()=>{ if(!mark.radius){ note("Mark the mirror ball first."); return; } setMode("mirror-spot"); }),
+      button("Remove last box",()=>{ mark.highlights.pop(); state.last=null; drawLayer(svg); }),
+      button("Clear this photo",()=>{ state.marks.delete(photo.id); state.draftBall=null; state.anchor=null; state.proposal=null; state.edit=null; layer.classList.remove("editing"); drawLayer(svg); }),
+    ]),el("small",{class:"muted",text:mark.radius ? `Ball radius ${mark.radius.toFixed(3)} · ${mark.highlights.length} highlight box(es)` : "No ball marked on this photo yet."}));
+  }
   caption.append(el("div",{class:"caption"},[
     el("span",{text:`${photo.image.size.join(" × ")} pixels · ${photo.image.encoding}`}),
     link("Original file",`/api/captures/${photo.id}/image/original`),
   ]));
   layer.onpointerdown=event=>{
+    const mode=markMode();
+    if(mode==="mirror-spot"){
+      state.anchor=logicalPoint(event,layer); layer.setPointerCapture(event.pointerId);
+      return;
+    }
     if(state.edit!=="region") return;
     state.anchor=logicalPoint(event,layer); layer.setPointerCapture(event.pointerId);
   };
   layer.onpointermove=event=>{
+    const mode=markMode();
+    if(mode==="mirror-spot" && state.anchor){
+      state.proposal=asRegion(state.anchor,logicalPoint(event,layer)); drawLayer(svg); return;
+    }
+    if(mode==="mirror-ball" && state.draftBall){
+      state.draftBall.edge=logicalPoint(event,layer); drawLayer(svg); return;
+    }
     if(!state.anchor || state.edit!=="region") return;
     state.region=asRegion(state.anchor,logicalPoint(event,layer)); drawLayer(svg);
   };
   layer.onpointerup=event=>{
+    const mode=markMode();
+    if(mode==="mirror-ball"){
+      const mark=activeMark(), point=logicalPoint(event,layer);
+      if(!mark.center){ mark.center=point; state.draftBall={center:point,edge:point}; }
+      else {
+        mark.radius=Math.max(.035,distance(mark.center,point)); state.draftBall=null; state.edit="mirror-spot";
+        note("Ball set. Drag a box around each lamp highlight, then run the inspection.");
+      }
+      drawLayer(svg); return;
+    }
+    if(mode==="mirror-spot" && state.anchor){
+      const box=asRegion(state.anchor,logicalPoint(event,layer));
+      state.proposal=null; state.anchor=null;
+      if(box[2]-box[0]>=.004 && box[3]-box[1]>=.004){
+        const mark=activeMark();
+        if(mark.highlights.length>=6) note("A ball keeps at most six highlight boxes.");
+        else { mark.highlights.push(box); note(`Highlight ${mark.highlights.length} marked. Drag another or run the inspection.`); }
+      }
+      drawLayer(svg); return;
+    }
     if(state.edit==="corners"){
       if(state.corners.length===4) state.corners=[];
       state.corners.push(onLayer(event,layer)); drawLayer(svg);
@@ -275,6 +319,19 @@ function onLayer(event,node) {
   return [trim((event.clientX-rect.left)/rect.width),trim((event.clientY-rect.top)/rect.height)].map(v=>Number(v.toFixed(5)));
 }
 function asRegion(a,b){return [Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];}
+function activeMark(){
+  const photo=state.item?.captures.find(c=>c.id===state.active);
+  if(!photo) return null;
+  if(!state.marks.has(photo.id)) state.marks.set(photo.id,{label:`Ball ${state.marks.size+1}`,center:null,radius:null,highlights:[]});
+  return state.marks.get(photo.id);
+}
+function distance(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1]);}
+function ballEllipse(mark){
+  if(!mark?.center || !mark.radius) return null;
+  const [cx,cy]=mark.center,r=mark.radius;
+  return [[cx-r,cy-r],[cx+r,cy-r],[cx+r,cy+r],[cx-r,cy+r]].map(point=>project(point,"forward_matrix"));
+}
+function markMode(){return state.tool==="mirror-ball" ? state.edit : null;}
 function drawLayer(svg) {
   svg.replaceChildren();
   const draw=(type,props)=>{
@@ -293,6 +350,37 @@ function drawLayer(svg) {
     draw("polygon",{points:ring.map(pt=>pt.map(n=>1000*n).join(",")).join(" "),
       fill:"#82c4aa25",stroke:"#8bd4b7","stroke-width":4});
   }
+  if(markMode()) drawMirrorMarks(svg,draw);
+  if(markMode()==="mirror-spot" && state.proposal){
+    const [x,y,r,b]=state.proposal;
+    const ring=[[x,y],[r,y],[r,b],[x,b]].map(point=>project(point,"forward_matrix"));
+    draw("polygon",{points:ring.map(pt=>pt.map(n=>1000*n).join(",")).join(" "),
+      fill:"#f9c56c22",stroke:"#f9c56c","stroke-width":3,"stroke-dasharray":"9 7"});
+  }
+}
+function drawMirrorMarks(svg,draw){
+  const mark=state.marks.get(state.active);
+  if(!mark) return;
+  const ellipse=ballEllipse(mark);
+  if(ellipse) draw("polygon",{points:ellipse.map(pt=>pt.map(n=>1000*n).join(",")).join(" "),
+    fill:"#80aaf718",stroke:"#80aaf7","stroke-width":4});
+  if(mark.center) draw("circle",{cx:mark.center[0]*1000,cy:mark.center[1]*1000,r:6,fill:"#80aaf7"});
+  if(state.draftBall){
+    const ring=ballEllipse({center:state.draftBall.center,radius:distance(state.draftBall.center,state.draftBall.edge)});
+    if(ring) draw("polygon",{points:ring.map(pt=>pt.map(n=>1000*n).join(",")).join(" "),fill:"none",stroke:"#80aaf7","stroke-width":3,"stroke-dasharray":"10 8"});
+  }
+  for(const [i,box] of mark.highlights.entries()){
+    const [x,y,r,b]=box;
+    const ring=[[x,y],[r,y],[r,b],[x,b]].map(point=>project(point,"forward_matrix"));
+    draw("polygon",{points:ring.map(pt=>pt.map(n=>1000*n).join(",")).join(" "),
+      fill:"#f9c56c22",stroke:"#f9c56c","stroke-width":3});
+    const label=String(i+1);
+    const at=project([x,y],"forward_matrix");
+    const text=document.createElementNS("http://www.w3.org/2000/svg","text");
+    text.setAttribute("x",at[0]*1000+4);text.setAttribute("y",at[1]*1000-4);
+    text.setAttribute("fill","#f9c56c");text.setAttribute("font-size",34);text.textContent=label;
+    svg.append(text);
+  }
 }
 async function runRegistration(photo,save) {
   if(state.corners.length!==4) throw new Error("Mark all four corners first.");
@@ -309,9 +397,11 @@ function toolPane() {
   const selected=tools.find(t=>t.key===state.tool);
   const field=selectField("Inspection tool","tool",tools.map(t=>[t.key,t.title]),state.tool);
   field.querySelector("select").id="tool-select";
-  field.querySelector("select").onchange=event=>{state.tool=event.target.value; state.last=null; state.loadedInputs=null; renderSurface();};
+  field.querySelector("select").onchange=event=>{state.tool=event.target.value; state.last=null; state.loadedInputs=null;
+    state.edit=null; state.draftBall=null; state.proposal=null; state.anchor=null; renderSurface();};
   const inputs=el("form",{class:"inputs",id:"tool-options"});
   for(const row of selected.controls){
+    if(selected.key==="mirror-ball" && row.key==="mirror_marks") continue;
     const initial=state.loadedInputs?.options?.[row.key] ?? row.default;
     let n;
     if(row.type==="json") n=jsonField(row.label,row.key,initial);
@@ -320,9 +410,12 @@ function toolPane() {
     else n=formField(row.label,row.key,initial,{type:"number",min:row.min,max:row.max,step:row.step});
     inputs.append(n);
   }
+  const guidance=selected.key==="mirror-ball"
+    ? el("p",{class:"muted",text:"For each selected photo use the stage buttons to circle the mirror ball, then drag a box around each bright lamp spot. Clipped white centres still return an angular range; close twin reflections are flagged and keep their recorded values."})
+    : null;
   inputs.onsubmit=event=>{event.preventDefault();guarded(()=>runInspection(false));};
   return el("section",{class:"tools"},[el("h2",{text:"Inspection"}),field,el("p",{class:"meta",text:selected.description}),
-    inputs,el("div",{class:"row"},[
+    guidance,inputs,el("div",{class:"row"},[
       button("Remember setup",()=>procedureForm()),button("Saved setups",()=>procedurePicker()),
       button("Run inspection",()=>runInspection(false),{class:"solid",id:"run"}),
       button("Save evidence",()=>saveDialog(),{id:"retain",disabled:!state.last})])]);
@@ -342,6 +435,15 @@ function requestForInspection(){
   }
   const captures=state.item.captures.map(c=>c.id).filter(id=>state.selected.has(id));
   const corrections=Object.fromEntries([...state.revisions].filter(([id])=>captures.includes(id)));
+  if(state.tool==="mirror-ball"){
+    const marks=captures.map((id,index)=>{
+      const mark=state.marks.get(id);
+      if(!mark?.center || !mark.radius) throw new Error("Mark the mirror ball centre, edge and at least one highlight on every selected photo.");
+      if(!mark.highlights.length) throw new Error("Add at least one highlight box to every marked mirror ball.");
+      return {label:mark.label || `Ball ${index+1}`,center:mark.center,radius:mark.radius,highlights:mark.highlights};
+    });
+    options.mirror_marks=marks;
+  }
   return {captures, corrections, region:state.region, options};
 }
 async function runInspection(retain,title){
@@ -370,6 +472,38 @@ function table(rows){
   const all=el("tbody",{},rows.slice(0,800).map(row=>el("tr",{},cols.map(k=>el("td",{text:asText(row[k])})))));
   return el("details",{},[el("summary",{text:`Observations (${rows.length} rows)`}),el("div",{class:"table"},[el("table",{},[head,all])])]);
 }
+function lampSuggestions(output){
+  if(output.report.kind!=="mirror-ball" || !output.report.rows?.length) return null;
+  const byPhoto=new Map();
+  for(const row of output.report.rows){
+    if(!byPhoto.has(row.capture_id)) byPhoto.set(row.capture_id,[]);
+    byPhoto.get(row.capture_id).push(row);
+  }
+  const cards=el("div",{class:"collection"});
+  for(const [cid,rows] of byPhoto){
+    const photo=state.item?.captures.find(c=>c.id===cid);
+    if(!photo) continue;
+    const ambiguous=rows.some(r=>r.status==="ambiguous");
+    const lines=rows.map(r=>el("p",{class:"meta"},[
+      el("strong",{text:`Spot ${r.spot} · ${r.status}`}),
+      document.createTextNode(` — az ${r.inferred_azimuth}° [${r.azimuth_interval.join("°–")}°], el ${r.inferred_elevation}° [${r.elevation_interval.join("°–")}°]`),
+    ]));
+    const children=[el("h3",{text:photo.metadata.title}),
+      el("p",{class:"muted",text:`Recorded: az ${photo.metadata.azimuth}°, el ${photo.metadata.elevation}°`}),...lines];
+    if(ambiguous){
+      children.push(el("p",{class:"warnings",text:"Reflections could not be separated. Recorded lamp values are retained; confirm on the object before changing anything."}));
+    } else {
+      const pick=rows[0];
+      children.push(button("Write inferred angles into this photo",async()=>{
+        const metadata={...photo.metadata,azimuth:pick.inferred_azimuth,elevation:pick.inferred_elevation};
+        await api(`/api/captures/${cid}`,json("PUT",{version:photo.version,metadata}));
+        await openSurface(state.item.surface.id,true); note("Lamp angles updated. Verify them against the other side-light photos.");
+      },{class:"solid"}));
+    }
+    cards.append(el("article",{class:"card"},children));
+  }
+  return el("details",{open:true},[el("summary",{text:"Lamp angle suggestions (review before applying)"}),cards]);
+}
 function renderReport(target, output){
   if(!target) return;
   const report=output.report;
@@ -387,7 +521,7 @@ function renderReport(target, output){
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
-    metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+    metrics,lampSuggestions(output),figures,downloads,table(report.rows),warnings].filter(Boolean));
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});
