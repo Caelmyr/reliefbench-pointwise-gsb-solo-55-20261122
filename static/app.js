@@ -312,6 +312,7 @@ function toolPane() {
   field.querySelector("select").onchange=event=>{state.tool=event.target.value; state.last=null; state.loadedInputs=null; renderSurface();};
   const inputs=el("form",{class:"inputs",id:"tool-options"});
   for(const row of selected.controls){
+    if(selected.input_kind==="retained" && row.key==="records") continue;
     const initial=state.loadedInputs?.options?.[row.key] ?? row.default;
     let n;
     if(row.type==="json") n=jsonField(row.label,row.key,initial);
@@ -322,10 +323,28 @@ function toolPane() {
   }
   inputs.onsubmit=event=>{event.preventDefault();guarded(()=>runInspection(false));};
   return el("section",{class:"tools"},[el("h2",{text:"Inspection"}),field,el("p",{class:"meta",text:selected.description}),
+    selected.input_kind==="retained" && sessionPicker(),
     inputs,el("div",{class:"row"},[
-      button("Remember setup",()=>procedureForm()),button("Saved setups",()=>procedurePicker()),
+      selected.input_kind!=="retained" && button("Remember setup",()=>procedureForm()),
+      selected.input_kind!=="retained" && button("Saved setups",()=>procedurePicker()),
       button("Run inspection",()=>runInspection(false),{class:"solid",id:"run"}),
       button("Save evidence",()=>saveDialog(),{id:"retain",disabled:!state.last})])]);
+}
+function sessionPicker(){
+  const stored=state.loadedInputs?.options?.records || [];
+  const candidates=state.item.inspections.filter(row=>row.kind==="normals");
+  const box=el("div",{class:"inputs"});
+  if(candidates.length<2){
+    box.append(el("p",{class:"meta",text:"Save a normal and reflectance report in each session first. Two retained reports are needed."}));
+    return box;
+  }
+  const choices=candidates.map(row=>[row.id,`${row.title} · ${row.created_at.slice(0,10)}`]);
+  const older=candidates[candidates.length-1].id, newer=candidates[0].id;
+  const prior=selectField("Earlier retained report","sessions-prior",choices,stored[0] && candidates.some(r=>r.id===stored[0]) ? stored[0] : older);
+  const current=selectField("Later retained report","sessions-current",choices,stored[1] && candidates.some(r=>r.id===stored[1]) ? stored[1] : newer);
+  prior.querySelector("select").dataset.records=true; current.querySelector("select").dataset.records=true;
+  box.append(prior,current);
+  return box;
 }
 function renderWorkbench(){
   const page=el("div",{class:"workspace"},[sourcePane(),stagePane(),toolPane()]);
@@ -337,6 +356,12 @@ function requestForInspection(){
   const doc=query("tool-options");
   if(!doc.reportValidity()) throw new Error("Check the input controls.");
   const options=formValues(doc);
+  const picked=[...doc.querySelectorAll("select[data-records]")].map(node=>node.value);
+  delete options["sessions-prior"]; delete options["sessions-current"];
+  if(picked.length===2){
+    if(picked[0]===picked[1]) throw new Error("Choose two different retained reports.");
+    options.records=picked;
+  }
   for(const f of doc.querySelectorAll("textarea")){
     try{options[f.name]=JSON.parse(f.value);}catch{throw new Error(`Check the coordinate array for ${human(f.name)}.`);}
   }
@@ -386,8 +411,13 @@ function renderReport(target, output){
     } else if(uri) downloads.append(link(file.name,uri,{class:"action",download:file.name}));
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
+  const links=report.links?.length?el("div",{class:"row"},report.links.map(item=>button(item.label,()=>openRetained(item.record),{class:"action","data-record":item.record}))):null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
-    metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+    metrics,links,figures,downloads,table(report.rows),warnings].filter(Boolean));
+}
+async function openRetained(id){
+  state.view="archive"; state.opened=null; renderSurface();
+  await openRecord(id);
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});

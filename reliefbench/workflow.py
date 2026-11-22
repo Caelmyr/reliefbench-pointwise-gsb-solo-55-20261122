@@ -11,6 +11,7 @@ from .physical_scale import ruler_readout
 from .models import JobRequest, Problem
 from .quality import focus_scout, held_out_light, physical_probe, stack_support
 from .sampling import camera_trace, frames_review, glare_census, light_patch, overlap_review
+from .session_compare import compare_sessions
 from .shapetools import coverage, gradient_check, height_report, normal_report, physical_section, relighting
 from .surface_export import contour_export, mesh_export
 from .texture import texture_report, tile_material, topographic_census
@@ -179,6 +180,19 @@ TOOLS = {
                      "Extract physical SVG paths from observed relative-height contours.", contour_export,
                      (num("spacing_mm", "Contour spacing, mm", .25, .015, 50.),
                       num("slope_limit", "Maximum interpreted slope", 3., .3, 8.))),
+    "sessions": Tool("Two-session change map", "Source history", "retained", 0, 0,
+                     "Compare two retained normal/reflectance reports on their common rectangle, "
+                     "classifying colour change, contour change and cases where the two disagree.",
+                     compare_sessions, (
+                         points("records", "Retained reports (earlier, later)", []),
+                         points("region", "Common window to use (blank for the saved windows)", []),
+                         points("reference", "Untouched reference patch (normalized)", [.05, .05, .15, .15]),
+                         num("colour_limit", "Colour change limit, delta E", 8., 1., 40.),
+                         num("normal_limit", "Contour change limit, degrees", 6., 1., 60.),
+                         num("support_distance_mm", "Reference support distance, mm", 25., 1., 500.),
+                         num("min_photos", "Minimum usable photos per session", 3, 3, 12),
+                         num("residual_limit", "Maximum diffuse fit residual", .09, .005, .5, .005),
+                         num("min_area_mm2", "Smallest reported change, mm2", .5, .01, 500.))),
 }
 
 
@@ -189,8 +203,10 @@ def catalog():
 def run(library, surface_id, kind, body):
     if kind not in TOOLS:
         raise Problem("Unknown inspection tool.", 404)
-    job = JobRequest.parse(kind, body)
     tool = TOOLS[kind]
+    if tool.input_kind == "retained":
+        return tool.handler(library, surface_id, body)
+    job = JobRequest.parse(kind, body)
     if not tool.minimum <= len(job.captures) <= tool.maximum:
         raise Problem(f"Select {tool.minimum} to {tool.maximum} photographs for this tool.")
     dataset = DataSet.load(library, surface_id, job)

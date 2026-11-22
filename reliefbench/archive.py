@@ -65,6 +65,22 @@ def _list_sources(record, library):
                                        {"original_hash": entry["hash"], "capture": entry["id"]})
 
 
+def _list_compared(record, library):
+    epochs = record["evidence"].get("epochs")
+    if not isinstance(epochs, list):
+        return
+    for index, epoch in enumerate(epochs, 1):
+        if not isinstance(epoch, dict):
+            continue
+        try:
+            snapshot = library.get_inspection(epoch["record"])
+        except Problem:
+            continue
+        name = f"compared/{index:02d}-{snapshot['id'][:10]}.json"
+        yield name, (_dump(snapshot), "application/json", "compared report snapshot",
+                     {"compared_record": snapshot["id"]})
+
+
 def _list_results(record, library):
     for item in record["files"]:
         blob, mime, _ = library.inspection_asset(record["id"], item["key"])
@@ -75,6 +91,7 @@ def build_packet(library, item, include_sources):
     envelope = library.get_inspection(item)
     components = _metadata_entries(envelope)
     components.update(_list_results(envelope, library))
+    components.update(_list_compared(envelope, library))
     sources = list(_list_sources(envelope, library)) if include_sources else []
     components.update(sources)
     payload_size = sum(len(raw) for raw, _, _, _ in components.values())

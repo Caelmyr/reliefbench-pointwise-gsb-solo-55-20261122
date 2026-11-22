@@ -54,11 +54,15 @@ class Result:
     rows: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     assets: dict = field(default_factory=dict)
+    links: list = field(default_factory=list)
 
     @property
     def report(self):
-        return {"kind": self.kind, "title": self.title, "summary": self.summary,
-                "metrics": self.metrics, "rows": self.rows, "warnings": self.warnings}
+        report = {"kind": self.kind, "title": self.title, "summary": self.summary,
+                  "metrics": self.metrics, "rows": self.rows, "warnings": self.warnings}
+        if self.links:
+            report["links"] = self.links
+        return report
 
     def add(self, key, name, mime, content):
         if key in self.assets:
