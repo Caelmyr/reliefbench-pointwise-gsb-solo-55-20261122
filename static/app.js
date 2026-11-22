@@ -4,6 +4,7 @@ const notification = document.getElementById("notice");
 const state = {
   catalog: null, item: null, active: "", selected: new Set(), revisions: new Map(), tool: "normals",
   view: "work", region: null, edit: null, corners: [], proposal: null, last: null, opened: null,
+  seal: null,
 };
 
 function el(tag, attributes = {}, children = []) {
@@ -97,7 +98,7 @@ async function openSurface(id, preserve=false) {
     state.active = loaded.captures[0]?.id || "";
     state.selected = new Set(loaded.captures.filter(c=>c.metadata.role==="raking").map(c=>c.id).slice(0,12));
     state.tool = "normals"; state.view = "work"; state.region = null; state.revisions.clear();
-    state.opened = null; state.last = null; state.loadedInputs = null;
+    state.opened = null; state.last = null; state.loadedInputs = null; state.seal = null;
   }
   state.item = loaded;
   state.edit = null;
@@ -171,7 +172,7 @@ function titleBar(s) {
     el("h1",{text:s.title}),el("p",{class:"meta",text:`${s.width_mm} × ${s.height_mm} mm${s.accession ? " · "+s.accession : ""}${s.synthetic ? " · Synthetic" : ""}`}),
   ]),button("Surface settings",()=>surfaceDialog(state.item),{class:"quiet"})]);
   const tabs=el("nav",{class:"tabs","aria-label":"Surface views"});
-  for(const [id,label] of [["work","Inspect"],["archive","Saved evidence"]]) tabs.append(button(label,()=>{
+  for(const [id,label] of [["work","Inspect"],["seal","Fragment finder"],["archive","Saved evidence"]]) tabs.append(button(label,()=>{
     state.view=id; state.edit=null; renderSurface();
   },{"aria-current":id===state.view}));
   return [heading,tabs];
@@ -197,6 +198,7 @@ function renderSurface() {
   const [head,tabs]=titleBar(state.item.surface);
   root.replaceChildren(head,tabs);
   if(state.view==="archive") renderArchive();
+  else if(state.view==="seal") renderSeal();
   else renderWorkbench();
 }
 function sourcePane() {
@@ -373,7 +375,28 @@ function table(rows){
 function renderReport(target, output){
   if(!target) return;
   const report=output.report;
-  const metrics=el("dl",{class:"metrics"},Object.entries(report.metrics||{}).map(([k,v])=>el("div",{},[
+  const metricsData=report.metrics||{};
+  const comparisons=Array.isArray(metricsData.comparisons)?metricsData.comparisons:null;
+  const ranking=Array.isArray(metricsData.ranking)?metricsData.ranking:null;
+  const hidden=new Set(["comparisons","ranking"]);
+  const fileMap=new Map((output.files||[]).map(file=>[file.key,file]));
+  const compareBar=comparisons?el("div",{class:"compare-list"},comparisons.map(entry=>{
+    const file=fileMap.get(entry.file);
+    const uri=file?.url||file?.data;
+    return el("div",{class:"compare-row"},[
+      el("div",{},[el("strong",{text:entry.title||entry.file}),el("small",{text:`${human(entry.status)}${entry.group?" · group "+entry.group:""}`})]),
+      uri?link("Open side by side",uri,{target:"_blank",rel:"noopener",class:"action"}):null,
+    ]);
+  })):null;
+  const rankingTable=ranking?el("table",{},[
+    el("thead",{},[el("tr",{},["Rank","Record","Score","Status","Group"].map(h=>el("th",{text:h})))]),
+    el("tbody",{},ranking.map((row,index)=>el("tr",{},[
+      el("td",{text:String(index+1)}),el("td",{text:row.title||row.record}),
+      el("td",{text:row.score===null||row.score===undefined?"—":String(row.score)}),
+      el("td",{text:human(row.status||"")}),el("td",{text:row.group||"—"}),
+    ]))),
+  ]):null;
+  const metrics=el("dl",{class:"metrics"},Object.entries(metricsData).filter(([k])=>!hidden.has(k)).map(([k,v])=>el("div",{},[
     el("dt",{text:human(k)}),el("dd",{text:asText(v)}),
   ])));
   const figures=el("div",{class:"images"});
@@ -387,7 +410,199 @@ function renderReport(target, output){
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
-    metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+    compareBar,metrics,rankingTable?el("details",{open:true},[el("summary",{text:"Candidate ranking"}),el("div",{class:"table"},[rankingTable])]):null,
+    figures,downloads,table(report.rows),warnings].filter(Boolean));
+}
+function renderSeal(){
+  const item=state.item;
+  if(!state.seal) state.seal={strokes:[],centre:null,rim:[],mode:"mark",candidates:new Set(),records:[],last:null,inputs:null};
+  const seal=state.seal;
+  const shorthand=item.captures.filter(photo=>["raking","diffuse"].includes(photo.metadata.role));
+  if(!shorthand.some(photo=>photo.id===state.active) && shorthand.length) state.active=shorthand[0].id;
+  const page=el("div",{class:"seal-workspace"});
+  const left=el("section",{class:"sidebar","aria-label":"Fragment photographs"});
+  left.append(el("h2",{text:"Fragment photographs"}));
+  for(const photo of (shorthand.length?shorthand:item.captures)){
+    const switcher=button(nameOf(photo),()=>{ state.active=photo.id; seal.strokes=[]; seal.centre=null; seal.rim=[]; seal.last=null; renderSurface(); },{"aria-pressed":photo.id===state.active});
+    switcher.append(el("small",{text:photo.metadata.role}));
+    left.append(el("div",{class:"capture"},[switcher]));
+  }
+  const photo=item.captures.find(c=>c.id===state.active);
+  const middle=el("section",{class:"stage"});
+  const right=el("section",{class:"tools"});
+  const results=el("section",{class:"results",id:"seal-results"});
+  if(!photo){
+    middle.append(el("p",{class:"empty",text:"Add a photograph to outline the fragment."}));
+    page.append(left,middle,right); root.append(page,results); return;
+  }
+  state.active=photo.id;
+  const layer=el("div",{class:"photo-stage seal-stage",id:"seal-stage"},[el("img",{src:`/api/captures/${photo.id}/image/preview`,alt:nameOf(photo),draggable:false})]);
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 1000 1000"); svg.setAttribute("preserveAspectRatio","none");
+  layer.append(svg);
+  const projectPoint=point=>project(point,"forward_matrix");
+  const revisionSelect=photo.registrations.map(r=>[r.id,`Registration v${r.revision}`]);
+  const registration=state.revisions.get(photo.id) || revisionSelect[0]?.[0] || "identity";
+  const registered=selectField("Source registration","registration",[...revisionSelect,["identity","Whole photograph"]],registration);
+  registered.querySelector("select").onchange=event=>{
+    state.revisions.set(photo.id,event.target.value);
+    seal.strokes=seal.strokes.map(stroke=>stroke.map(projectPoint));
+    if(seal.centre) seal.centre=projectPoint(seal.centre);
+    seal.rim=seal.rim.map(projectPoint);
+    seal.last=null; renderSurface();
+  };
+  const modeLabel={mark:"Tap the strokes you can read. Each tap adds a point.",centre:"Tap the middle of the impression.",rim:"Tap two points on the surviving rim."};
+  const drawSeal=()=>{
+    svg.replaceChildren();
+    const draw=(type,props)=>{const n=document.createElementNS("http://www.w3.org/2000/svg",type);for(const [name,val] of Object.entries(props))n.setAttribute(name,val);svg.append(n);};
+    for(const stroke of seal.strokes){
+      if(stroke.length>1){
+        const line=stroke.map(point=>projectPoint(point).map(n=>n*1000).join(",")).join(" ");
+        draw("polyline",{points:line,fill:"none",stroke:"#8bd4b7","stroke-width":4});
+      }
+      for(const point of stroke){const [x,y]=projectPoint(point);draw("circle",{cx:x*1000,cy:y*1000,r:5,fill:"#8bd4b7"});}
+    }
+    if(seal.centre){const [x,y]=projectPoint(seal.centre);draw("circle",{cx:x*1000,cy:y*1000,r:9,fill:"none",stroke:"#ebc48b","stroke-width":4});}
+    for(const point of seal.rim){const [x,y]=projectPoint(point);draw("circle",{cx:x*1000,cy:y*1000,r:8,fill:"none",stroke:"#ef7765","stroke-width":4});}
+    if(seal.rim.length===2 && seal.centre){
+      const [cx,cy]=projectPoint(seal.centre); const [rx,ry]=projectPoint(seal.rim[0]);
+      const radius=Math.hypot((rx-cx)*1000,(ry-cy)*1000);
+      draw("circle",{cx:cx*1000,cy:cy*1000,r:radius,fill:"none",stroke:"#ebc48b","stroke-width":2,"stroke-dasharray":"8 8"});
+    }
+  };
+  const slots={
+    mark:()=>{
+      if(!seal.strokes.length||seal.newStroke){seal.strokes.push([]);seal.newStroke=false;}
+      const point=[0,0];
+      seal.strokes[seal.strokes.length-1].push(point);
+      return point;
+    },
+    centre:()=>{
+      seal.centre=[0,0];
+      return seal.centre;
+    },
+    rim:()=>{
+      if(seal.rim.length<2)seal.rim.push([0,0]);
+      else seal.rim=[seal.rim[1],[0,0]];
+      return seal.rim[seal.rim.length-1];
+    },
+  };
+  layer.addEventListener("pointerup",event=>{
+    const point=logicalPoint(event,layer);
+    const slot=slots[seal.mode]();
+    slot[0]=point[0];
+    slot[1]=point[1];
+    seal.last=null;
+    drawSeal();
+  });
+  drawSeal();
+  middle.append(el("div",{class:"stage-actions"},[el("h2",{text:nameOf(photo)})]),layer,
+    el("p",{class:"meta",text:modeLabel[seal.mode]||""}),
+    el("div",{class:"row"},[
+      button("Mark strokes",()=>{seal.mode="mark"; seal.newStroke=false; renderSurface();}),
+      button("New stroke",()=>{seal.newStroke=true; note("The next tap starts a new stroke.");}),
+      button("Set centre",()=>{seal.mode="centre"; renderSurface();}),
+      button("Set rim",()=>{seal.mode="rim"; renderSurface();}),
+      button("Undo last tap",()=>{
+        if(seal.mode==="mark" && seal.strokes.length) seal.strokes[seal.strokes.length-1].pop();
+        else if(seal.mode==="rim" && seal.rim.length) seal.rim.pop();
+        seal.strokes=seal.strokes.filter(stroke=>stroke.length);
+        seal.last=null; drawSeal();
+      }),
+      button("Clear marks",()=>{seal.strokes=[]; seal.centre=null; seal.rim=[]; seal.last=null; renderSurface();}),
+    ]),registered);
+  const field=(label,key,value,attrs={})=>{
+    const input=el("input",{type:"number",value,...attrs});
+    input.oninput=()=>{const v=Number(input.value); if(Number.isFinite(v)&&v>0){seal[key]=v; seal.last=null;}};
+    seal[key]=value;
+    return el("label",{},[document.createTextNode(label),input]);
+  };
+  seal.radius_mm=seal.radius_mm||60; seal.stroke_width_mm=seal.stroke_width_mm||1.2; seal.samples=seal.samples||192;
+  seal.angle_step=seal.angle_step||2; seal.min_visible=seal.min_visible||.55; seal.tolerance_mm=seal.tolerance_mm||.35;
+  const keep=checkField("Keep unresolved pairs",{checked:seal.keep_unresolved!==false});
+  keep.querySelector("input").onchange=event=>{seal.keep_unresolved=event.target.checked; seal.last=null;};
+  right.append(el("h2",{text:"Fragment finder"}),
+    el("p",{class:"meta",text:"Name a few visible strokes, place the centre and click the surviving rim. Sizes are measured on the plate, not guessed from the picture."}),
+    el("div",{class:"inputs"},[
+      field("Largest dial radius (mm)","radius_mm",seal.radius_mm,{min:4,max:120,step:"any"}),
+      field("Stroke width (mm)","stroke_width_mm",seal.stroke_width_mm,{min:.25,max:6,step:"any"}),
+      field("Rotation step (°)","angle_step",seal.angle_step,{min:1,max:30,step:"any"}),
+      field("Minimum visible share","min_visible",seal.min_visible,{min:.2,max:1,step:"any"}),
+      field("Depth tolerance (mm)","tolerance_mm",seal.tolerance_mm,{min:.02,max:4,step:"any"}),
+      keep,
+    ]),
+    el("h2",{text:"Old records"}),
+    el("p",{class:"meta",text:"Choose saved relative-height records to search."}),
+    el("div",{class:"record-list",id:"seal-records"}));
+  const candidateList=right.querySelector("#seal-records");
+  if(!seal.records.length) candidateList.append(el("p",{class:"meta",text:"Loading saved height records…"}));
+  for(const record of seal.records){
+    const box=el("input",{type:"checkbox",checked:seal.candidates.has(record.record),"aria-label":`Search ${record.title}`});
+    box.onchange=()=>{
+      box.checked?seal.candidates.add(record.record):seal.candidates.delete(record.record);
+      seal.last=null; seal.inputs=null;
+      const save=query("seal-save"); if(save) save.disabled=true;
+    };
+    candidateList.append(el("label",{class:"candidate-check"},[box,el("span",{text:`${record.title} · ${record.surface_title} · ${record.width_mm}×${record.height_mm} mm`})]));
+  }
+  right.append(el("div",{class:"row"},[
+    button("Search records",()=>runSeal(false),{id:"seal-run"}),
+    button("Save this search",()=>saveSeal(),{class:"solid",id:"seal-save",disabled:!seal.last}),
+  ]));
+  page.append(left,middle,right);
+  root.append(page,results);
+  if(seal.last) renderReport(results,seal.last);
+  if(!seal.records.length) guarded(async()=>{
+    const reply=await api("/api/height-records");
+    seal.records=reply.records;
+    if(state.view==="seal") renderSurface();
+  });
+}
+function sealPayload(){
+  const seal=state.seal; const photo=state.item.captures.find(c=>c.id===state.active);
+  if(!photo) throw new Error("Choose the fragment photograph first.");
+  if(seal.strokes.reduce((sum,stroke)=>sum+stroke.length,0)<2) throw new Error("Tap at least two points on the visible strokes.");
+  if(!seal.centre) throw new Error("Place the centre of the impression.");
+  if(seal.rim.length!==2) throw new Error("Tap two points on the surviving rim.");
+  if(!seal.candidates.size) throw new Error("Choose at least one old record to search.");
+  const registration=state.revisions.get(photo.id) || photo.registrations[0]?.id || "identity";
+  const records=seal.records.filter(record=>seal.candidates.has(record.record));
+  return {surface:state.item.surface.id,capture:photo.id,registration,
+    strokes:seal.strokes.filter(stroke=>stroke.length),
+    centre:seal.centre,radius_mm:seal.radius_mm,stroke_width_mm:seal.stroke_width_mm,
+    rim_points:seal.rim,samples:seal.samples||192,angle_step:seal.angle_step,
+    min_visible:seal.min_visible,tolerance_mm:seal.tolerance_mm,
+    keep_unresolved:seal.keep_unresolved!==false,
+    candidates:records.map(record=>({record:record.record,surface:record.surface}))};
+}
+async function runSeal(retain){
+  const seal=state.seal;
+  const data=retain ? {...seal.inputs,retain:true,title:seal.pendingTitle,
+    expected_preview:seal.last?.evidence?.data_signature?.identity} : sealPayload();
+  note("Comparing the fragments…");
+  const runButton=query("seal-run"); if(runButton) runButton.disabled=true;
+  let output;
+  try { output=await api("/api/seal-match",json("POST",data)); }
+  finally { const buttonNow=query("seal-run"); if(buttonNow) buttonNow.disabled=false; }
+  if(state.view!=="seal") return;
+  seal.last={...output,inputs:data};
+  seal.inputs=data;
+  renderReport(query("seal-results"),output);
+  const save=query("seal-save");
+  if(save) save.disabled=false;
+  if(retain){ state.loadedInputs=null; await openSurface(state.item.surface.id,true); state.view="seal"; note("Fragment search archived."); }
+  else note("Candidate list ready.");
+}
+function saveSeal(){
+  if(!state.seal?.last) throw new Error("Run the search before saving it.");
+  dialog("Save fragment search",[
+    formField("Search name","title",state.seal.last.report.title,{required:true,maxlength:120}),
+    el("p",{class:"meta",text:"The drawn strokes, rim clicks, chosen records and side-by-side comparisons are kept together."}),
+  ],async form=>{
+    state.seal.inputs=state.seal.inputs||sealPayload();
+    state.seal.pendingTitle=formValues(form).title;
+    await runSeal(true);
+  },"Archive search");
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});

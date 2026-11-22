@@ -18,8 +18,13 @@ The default address is `http://127.0.0.1:19958/`. The server mounts a Compose vo
 - Light and surface: lamp coverage and mount planning, marked response by angle, directional normals and reflectance, a withheld lamp check, slope consistency, relative height, contours and virtual lighting.
 - Physical readout: topology features, material cells, line cross-sections, local texture amplitude and directional spectra. Retained data include CSV, PNG and relevant calibrated TIFF, OBJ, PLY or SVG.
 - Source history: four-corner planar registrations, named setup review, snapshot-safe inspections, immutable assets, review events, PDF handouts and independently checkable evidence and capture packets.
+- Fragment finder: outline the readable strokes of a broken seal fragment on its own photograph, nominate the impression centre and two points on the surviving rim, then search saved relative-height records at the fragment's actual millimetre size. Candidate pairs are compared with rotation and translation only, side by side on both originals, and kept with the drawn strokes and unresolved groups.
 
 The Slate and Ochre examples are generated. Their reference photographs include a ruler, color swatches, a flat field and a pair of dark reference exposures. Coordinates are normalized from the top-left. Azimuth is clockwise from image right with positive elevation toward the camera.
+
+## Fragment finder
+
+Open a surface and choose **Fragment finder**. Mark a few strokes you can read, tap the middle of the impression and tap the surviving rim twice. The dial radius comes from those rim clicks in millimetres, so the search never rescales a candidate to fit. Saved relative-height records from any surface can be selected. The score comes from stroke relief at that physical size; the outer circle is reported as rim evidence and is never counted as stroke support. Records that only agree on the same short, weakly fixed stretch stay together under one unresolved label unless you turn that option off.
 
 ## Limits and units
 

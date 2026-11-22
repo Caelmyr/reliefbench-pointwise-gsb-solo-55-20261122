@@ -20,6 +20,7 @@ from .provenance import public_signature, require_match, seal
 from .raster import decode, png
 from .registration import Registration, examine_registration
 from .results import Result
+from .seal_match import SealSpec, evidence as seal_evidence, search_report
 from .storage import Library
 from .visual import GOLD, MINT, flatten_rgb, overlay, scale_bar, split_visual
 from .transfer import export_capture_set, import_capture_set, inspect_capture_set
@@ -329,6 +330,35 @@ def register_results(app, library, work):
             return verify_packet(payload)
 
 
+def register_seal(app, library, work):
+    @app.get("/api/height-records")
+    def height_records():
+        return {"records": library.height_records()}
+
+    @app.post("/api/seal-match")
+    def seal_match():
+        obj = data()
+        retained = flag(obj.get("retain", False), "Retain result")
+        expected = obj.pop("expected_preview", None)
+        candidate_body = {key: obj.get(key) for key in
+                          ("surface", "capture", "registration", "strokes", "centre", "radius_mm",
+                           "stroke_width_mm", "rim_points", "samples", "angle_step", "min_visible",
+                           "tolerance_mm", "keep_unresolved", "candidates")}
+        spec = SealSpec.parse(candidate_body)
+        with work.enter():
+            found, result = search_report(library, spec)
+            evidence = seal_evidence(found, spec)
+            signature = seal(result, evidence)
+            evidence["data_signature"] = public_signature(signature)
+            if retained:
+                if expected is not None:
+                    require_match(expected, signature)
+                title = text(obj.get("title", result.title), "Record title")
+                saved = library.save_inspection(spec.surface, title, result, evidence)
+                return {"record": saved, **result.public(evidence)}, 201
+        return result.public(evidence)
+
+
 def create_app(data_dir=None):
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = PACKET_LIMIT + 1024 * 1024
@@ -341,6 +371,7 @@ def create_app(data_dir=None):
     register_results(app, library, work)
     register_transfer(app, library, work)
     register_procedures(app, library)
+    register_seal(app, library, work)
 
     @app.get("/")
     def homepage():

@@ -201,9 +201,10 @@ def _metadata(page, record):
         reveal += " / synthetic training"
     y = page.paragraph(14, y + 3, reveal, width, 9.5)
     y = page.paragraph(14, y + 4, record["report"]["summary"], width, 9.5, max_lines=3)
-    zone = record["evidence"]["parameters"]["region"]
+    zone = record["evidence"]["parameters"].get("region")
     fields = [
-        ("Review status", record["state"]), ("Working region", [_number(f) for f in zone]),
+        ("Review status", record["state"]),
+        ("Working region", [_number(f) for f in zone] if zone else "whole surface"),
         ("Photos at save", len(record["evidence"]["sources"])), ("Saved at UTC", record["created_at"]),
         ("Tool", record["kind"]),
     ]

@@ -409,6 +409,24 @@ class Library:
                                  "registrations": len(photo.registrations)})
             return {"surface": expose_surface(self._surface(conn, sid)), "imported": imported}
 
+    def height_records(self):
+        """Retained relative-height records across every surface, for fragment comparison."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT i.id, i.title, i.kind, i.surface_id, i.state, i.revision, i.created_at,
+                          s.body AS surface_body
+                   FROM inspection AS i INNER JOIN surface AS s ON s.id=i.surface_id
+                   WHERE i.kind='height' ORDER BY i.created_at DESC""")
+            items = []
+            for row in rows:
+                body = json.loads(row["surface_body"])
+                items.append({"record": row["id"], "title": row["title"], "kind": row["kind"],
+                              "surface": row["surface_id"], "surface_title": body["title"],
+                              "state": row["state"], "revision": row["revision"],
+                              "created_at": row["created_at"], "width_mm": body["width_mm"],
+                              "height_mm": body["height_mm"], "accession": body.get("accession", "")})
+            return items
+
     def _procedures(self, conn, surface_id):
         rows = conn.execute("SELECT * FROM procedure WHERE surface_id=? ORDER BY created_at DESC", (surface_id,))
         return [{"id": row["id"], "created_at": row["created_at"], **json.loads(row["body"])} for row in rows]
