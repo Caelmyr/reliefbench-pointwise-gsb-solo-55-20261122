@@ -19,7 +19,8 @@ def _asset_occurrences(result):
 def _source_revision_data(sources):
     return [{"key": photo["id"], "source_hash": photo["hash"],
              "registrations": photo["registration_id"], "camera_settings": photo["settings"],
-             "capture_version": photo["capture_version"]}
+             "capture_version": photo["capture_version"],
+             **({"interior_grid": photo["interior_grid"]} if photo.get("interior_grid") else {})}
             for photo in sources]
 
 
@@ -31,6 +32,7 @@ def seal(result, evidence):
               "originals": revisions, "surface_version": frame["version"],
               "surface_id": frame["id"], "dimensions_mm": [frame["width_mm"], frame["height_mm"]],
               "parameters": evidence["parameters"], "working_scale": evidence["scale"],
+              "interior_grid": evidence.get("interior_grid"),
               "measurements_sha256": fingerprint(result.report), "report_files": images}
     return {"preview": fingerprint(frozen), **frozen}
 

@@ -3,7 +3,7 @@ import numpy as np
 from PIL import ImageDraw
 from scipy import ndimage
 
-from .dataset import flatten_numbers, region_row
+from .dataset import GRID_INK, flatten_numbers, region_row
 from .models import Point, Problem, Region, choice, fields, number, rounded, whole
 from .raster import line_samples, safe_fraction, sample_field, statistics
 from .results import Result
@@ -14,7 +14,10 @@ from .visual import (COOL, DIVERGE, GOLD, HOT, MINT, Extent, Trace, contact_shee
 def _photo_view(frame, dataset, shown=None):
     mask = frame.alpha_valid if shown is None else shown
     picture = flatten_rgb(frame.code, mask, False)
-    return overlay(picture, [("closed", dataset.region.corners(), MINT, "Analysis region")])
+    guides = [("closed", dataset.region.corners(), MINT, "Analysis region")]
+    guides.extend(("closed", camera, GRID_INK, label)
+                  for owner, _shape, camera, _ink, label in dataset.grid_guides("camera") if owner == frame.id)
+    return overlay(picture, guides)
 
 
 def frames_review(dataset, options):

@@ -7,6 +7,7 @@ ReliefBench is a local photography workbench for studying the visible relief of 
 1. Run `./start.sh` with Docker Compose and open the address printed by the command.
 2. Open either synthetic example or create a new surface with dimensions in millimetres. Add a photograph for each known directional light. Set its angle, strength, exposure and camera label.
 3. Select the relevant photographs in the left pane. Choose an inspection in the right pane and run it. The right-hand controls give editable rectangles or position arrays for the mark and reference tools.
+   If four corners alone leave the inner ruling slightly skewed, choose **Mark interior cells**, click plate intersections you trust and type their plate millimetres. The correction is local: it fades to zero before the plate border, so a small patch of marks never moves good outer edges. The preview compares corners-only against the refined crop and names the first mark to drop when one disagrees with its neighbours.
 4. Save a result to keep its actual source revisions, report images and numeric tables. From Saved evidence, open the result to review it, download a PDF or check a ZIP through Verify packet. Capture sets can be imported into a new surface independently of inspection records.
 
 The default address is `http://127.0.0.1:19958/`. The server mounts a Compose volume called `relief-library`. To stop without clearing data, run `docker compose stop`.
@@ -17,7 +18,9 @@ The default address is `http://127.0.0.1:19958/`. The server mounts a Compose vo
 - Reference photography: neutral and color standards, fixed-pattern dark checks, radial flat-field checks, preview of per-channel flat compensation.
 - Light and surface: lamp coverage and mount planning, marked response by angle, directional normals and reflectance, a withheld lamp check, slope consistency, relative height, contours and virtual lighting.
 - Physical readout: topology features, material cells, line cross-sections, local texture amplitude and directional spectra. Retained data include CSV, PNG and relevant calibrated TIFF, OBJ, PLY or SVG.
-- Source history: four-corner planar registrations, named setup review, snapshot-safe inspections, immutable assets, review events, PDF handouts and independently checkable evidence and capture packets.
+- Source history: four-corner planar registrations, optional interior-cell refinement on marked plate intersections, named setup review, snapshot-safe inspections, immutable assets, review events, PDF handouts and independently checkable evidence and capture packets.
+
+An interior refinement is stored as a new registration revision. Its plate millimetres, fitted support cells, corner and edge movement are carried into every later inspection, saved evidence, printed handout and capture-set export, so a camera view or surface check can state which span of the image actually used those interior cells.
 
 The Slate and Ochre examples are generated. Their reference photographs include a ruler, color swatches, a flat field and a pair of dark reference exposures. Coordinates are normalized from the top-left. Azimuth is clockwise from image right with positive elevation toward the camera.
 

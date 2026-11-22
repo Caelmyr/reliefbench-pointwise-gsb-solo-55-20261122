@@ -228,7 +228,8 @@ def physical_probe(dataset, options):
     result = Result("probe", "Revisit measured points",
                     "Locate markers on original photos and inspect native camera codes.",
                     {"points": len(points), "photos": len(dataset.frames), "readings": len(result_rows),
-                     "physical_scale": dataset.scale.public()}, result_rows)
+                     "physical_scale": dataset.scale.public(), "interior_grid": dataset.grid_readout()},
+                    result_rows)
     drawings = []
     for frame in dataset.frames[:8]:
         drawn = []

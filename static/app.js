@@ -4,6 +4,7 @@ const notification = document.getElementById("notice");
 const state = {
   catalog: null, item: null, active: "", selected: new Set(), revisions: new Map(), tool: "normals",
   view: "work", region: null, edit: null, corners: [], proposal: null, last: null, opened: null,
+  grid: [], gridNote: "",
 };
 
 function el(tag, attributes = {}, children = []) {
@@ -211,7 +212,7 @@ function sourcePane() {
     const check=el("input",{type:"checkbox",checked:state.selected.has(photo.id),"aria-label":`Use ${nameOf(photo)}`});
     check.onchange=()=>check.checked ? state.selected.add(photo.id) : state.selected.delete(photo.id);
     const switcher=button(nameOf(photo),()=>{
-      state.active=photo.id; state.edit=null; state.proposal=null; state.corners=[]; renderSurface();
+      state.active=photo.id; state.edit=null; state.proposal=null; state.corners=[]; state.grid=[]; renderSurface();
     },{"aria-pressed":photo.id===active});
     switcher.append(el("small",{text:photo.metadata.role}));
     pane.append(el("div",{class:"capture"},[check,switcher]));
@@ -230,20 +231,32 @@ function stagePane() {
   svg.setAttribute("viewBox","0 0 1000 1000"); svg.setAttribute("preserveAspectRatio","none");
   layer.append(svg); caption.append(layer);
   const setMode=(type)=>{
-    state.edit=type; state.corners=[]; state.proposal=null; layer.classList.add("editing");
-    note(type==="corners" ? "Click all four corners clockwise from the upper left." : "Drag a rectangle on the working coordinate view.");
+    state.edit=type; state.proposal=null; layer.classList.add("editing");
+    if(type==="grid"){
+      state.grid=[];
+      const saved=loadedRegistration()?.corners;
+      state.corners=saved ? saved.map(point=>[...point]) : [];
+      if(!saved) note("Mark the four corners first, then add interior cells on the same view.");
+    } else {
+      state.corners=[];
+    }
+    note(type==="corners" ? "Click all four corners clockwise from the upper left."
+      : type==="grid" ? "Click each interior intersection, then type its plate millimetres."
+      : "Drag a rectangle on the working coordinate view.");
     drawLayer(svg);
   };
   const revisions=photo.registrations.map(r=>[r.id,`Registration v${r.revision}`]);
   const set=selectField("Source registration","registration",[...revisions,["identity","Whole photograph"]],state.revisions.get(photo.id) || revisions[0]?.[0] || "identity");
-  set.querySelector("select").onchange=event=>{ state.revisions.set(photo.id,event.target.value); state.last=null; drawLayer(svg); };
+  set.querySelector("select").onchange=event=>{ state.revisions.set(photo.id,event.target.value); state.grid=[]; state.last=null; drawLayer(svg); };
   caption.append(el("div",{class:"row"},[
     button("Mark four corners",()=>setMode("corners")),
+    button("Mark interior cells",()=>setMode("grid")),
     button("Preview registration",()=>runRegistration(photo,false),{id:"preview-registration"}),
     button("Save registration",()=>runRegistration(photo,true),{id:"save-registration"}),
     button("Select region",()=>setMode("region")),
     button("Clear region",()=>{ state.region=null; drawLayer(svg); }),
   ]),set);
+  if(state.edit==="grid" || state.grid.length) caption.append(gridEditor(svg));
   caption.append(el("div",{class:"caption"},[
     el("span",{text:`${photo.image.size.join(" × ")} pixels · ${photo.image.encoding}`}),
     link("Original file",`/api/captures/${photo.id}/image/original`),
@@ -260,6 +273,16 @@ function stagePane() {
     if(state.edit==="corners"){
       if(state.corners.length===4) state.corners=[];
       state.corners.push(onLayer(event,layer)); drawLayer(svg);
+    } else if(state.edit==="grid"){
+      if(state.grid.length>=24) throw new Error("Mark at most 24 interior intersections.");
+      state.grid.push({camera:onLayer(event,layer), x:"", y:""});
+      drawLayer(svg);
+      const editor=query("grid-marks");
+      if(editor){
+        editor.replaceWith(gridEditor(svg));
+        const inputs=query("grid-marks").querySelectorAll("input");
+        inputs[inputs.length-2]?.focus();
+      }
     } else if(state.edit==="region" && state.anchor) {
       state.region=asRegion(state.anchor,logicalPoint(event,layer));
       if(state.region[2]-state.region[0]<.012 || state.region[3]-state.region[1]<.012) state.region=null;
@@ -275,6 +298,43 @@ function onLayer(event,node) {
   return [trim((event.clientX-rect.left)/rect.width),trim((event.clientY-rect.top)/rect.height)].map(v=>Number(v.toFixed(5)));
 }
 function asRegion(a,b){return [Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];}
+function gridEditor(svg){
+  const card=el("div",{class:"grid-marks",id:"grid-marks"});
+  card.append(el("p",{class:"meta",text:state.grid.length
+    ? "Type the plate millimetre pair for each marked intersection. Keep marks in the middle of the plate; the four corners stay where they are."
+    : "Click the interior intersections you trust, then type their measured plate millimetres."}));
+  const suggestion=state.last?.gridSuggestion;
+  if(suggestion) card.append(el("p",{class:"warn",text:suggestion.message}));  for(const [index, mark] of state.grid.entries()){
+    const x=el("input",{type:"number",step:"any",min:0,value:mark.x,placeholder:"x mm","aria-label":`Mark ${index+1} plate x`});
+    const y=el("input",{type:"number",step:"any",min:0,value:mark.y,placeholder:"y mm","aria-label":`Mark ${index+1} plate y`});
+    x.oninput=()=>{mark.x=x.value;};
+    y.oninput=()=>{mark.y=y.value;};
+    x.onchange=()=>{drawLayer(svg);};
+    y.onchange=()=>{drawLayer(svg);};
+    card.append(el("div",{class:"row"},[el("span",{class:"mark-label",text:`M${index+1}`}),x,y,
+      button("Remove",()=>{state.grid.splice(index,1); renderSurface();},{class:"quiet"}) ]));  }
+  if(suggestion && state.grid[suggestion.mark-1]){
+    card.append(button(`Drop mark ${suggestion.mark} and preview again`,()=>{
+      state.grid.splice(suggestion.mark-1,1); runRegistration(currentPhoto(),false);
+    }));
+  }
+  card.append(el("p",{class:"meta",text:"Three or more marks in two directions are needed. A small interior patch never moves the border."}));
+  return card;
+}
+function currentPhoto(){ return state.item?.captures.find(c=>c.id===state.active); }
+function gridPayload(){
+  if(!state.grid.length) return null;
+  const points=state.grid.map(mark=>({
+    camera:mark.camera,
+    plate_mm:[Number(mark.x),Number(mark.y)],
+  }));
+  for(const [index, point] of points.entries()){
+    if(!Number.isFinite(point.plate_mm[0]) || !Number.isFinite(point.plate_mm[1])
+      || !String(state.grid[index].x).trim() || !String(state.grid[index].y).trim())
+      throw new Error(`Enter the plate millimetres for mark ${index+1}.`);
+  }
+  return {points};
+}
 function drawLayer(svg) {
   svg.replaceChildren();
   const draw=(type,props)=>{
@@ -287,6 +347,24 @@ function drawLayer(svg) {
     points:rgba.map(c=>c.map(n=>n*1000).join(",")).join(" "),fill:"none",stroke:"#ebc48b","stroke-width":4,
   });
   for(const [x,y] of rgba) draw("circle",{cx:x*1000,cy:y*1000,r:7,fill:"#ebc48b"});
+  for(const [index, mark] of state.grid.entries()){
+    const [x,y]=mark.camera;
+    draw("circle",{cx:x*1000,cy:y*1000,r:6,fill:mark.inconsistent?"#ef7765":"#8bd4b7"});
+    draw("text",{x:x*1000+9,y:y*1000-8,fill:"#ebeddf","font-size":15,"font-family":"sans-serif",
+      text:`M${index+1}`});
+  }
+  const grid=loadedRegistration()?.grid;
+  if(grid && !state.grid.length){
+    for(const point of grid.points||[]){
+      draw("circle",{cx:point.camera[0]*1000,cy:point.camera[1]*1000,r:4,fill:"#6ae6c4",opacity:.6});
+    }
+    for(const mark of grid.diagnostics?.summary?.support_cells_mm||[]){
+      const box=[[mark.left_mm,mark.top_mm],[mark.right_mm,mark.top_mm],[mark.right_mm,mark.bottom_mm],[mark.left_mm,mark.bottom_mm]]
+        .map(([u,v])=>project([u/(state.item.surface.width_mm||1),v/(state.item.surface.height_mm||1)],"forward_matrix"));
+      draw("polygon",{points:box.map(pt=>pt.map(n=>1000*n).join(",")).join(" "),
+        fill:"#ebc48b10",stroke:"#ebc48b","stroke-width":2});
+    }
+  }
   if(state.region){
     const [x,y,r,b]=state.region;
     const ring=[[x,y],[r,y],[r,b],[x,b]].map(point=>project(point,"forward_matrix"));
@@ -296,13 +374,27 @@ function drawLayer(svg) {
 }
 async function runRegistration(photo,save) {
   if(state.corners.length!==4) throw new Error("Mark all four corners first.");
-  const result=await api(`/api/captures/${photo.id}/registration`,json("POST",{corners:state.corners,note:"",save}));
+  const grid=gridPayload();
+  const result=await api(`/api/captures/${photo.id}/registration`,json("POST",{corners:state.corners,note:"",save,grid}));
+  const suggestion=result.report?.metrics?.interior_grid?.suggested_exclusion || null;
+  state.last={...result,gridSuggestion:suggestion};
   if(save) {
-    state.revisions.set(photo.id,result.registration.id); state.corners=[];
+    state.revisions.set(photo.id,result.registration.id); state.corners=[]; state.grid=[]; state.last=null;
     await openSurface(state.item.surface.id,true);
   }
   renderReport(query("results"),result);
-  note(save ? "Registration saved." : "Registration preview.");
+  if(suggestion) renderGridSuggestion(query("results"),suggestion);
+  note(save ? "Registration saved." : suggestion ? suggestion.message : "Registration preview.");
+}
+function renderGridSuggestion(target, suggestion){
+  if(!target) return;
+  const card=el("div",{class:"warn-card"},[
+    el("p",{text:suggestion.message}),
+    button(`Drop mark ${suggestion.mark} and preview the rest`,()=>{
+      state.grid.splice(suggestion.mark-1,1); guarded(()=>runRegistration(currentPhoto(),false));
+    }),
+  ]);
+  target.prepend(card);
 }
 function toolPane() {
   const tools=state.catalog.tools;

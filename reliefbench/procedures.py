@@ -19,7 +19,7 @@ def _data_hash(doc):
 
 def _capture_snapshot(frame, registration):
     return {**{key: frame[key] for key in TRACKED_CAPTURE}, "registration": {
-        key: registration[key] for key in ("id", "revision", "corners")
+        key: registration[key] for key in ("id", "revision", "corners", "grid") if registration.get(key) is not None
     } if registration else None}
 
 

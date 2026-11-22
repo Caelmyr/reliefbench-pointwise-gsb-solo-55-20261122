@@ -320,8 +320,9 @@ class Library:
         with self.connect(writing=True) as conn:
             self._capture(conn, capture_id)
             latest = self._registration(conn, capture_id, None)
-            if latest and latest["corners"] == spec.public()["corners"]:
-                raise Problem("These are already the latest registration corners.", 409)
+            if latest and latest["corners"] == spec.public()["corners"] \
+                    and latest.get("grid") == spec.public().get("grid"):
+                raise Problem("These are already the latest registration corners and interior marks.", 409)
             rev = latest["revision"] + 1 if latest else 1
             if rev > 36:
                 raise Problem("Keep at most 36 registrations per photograph.", 413)

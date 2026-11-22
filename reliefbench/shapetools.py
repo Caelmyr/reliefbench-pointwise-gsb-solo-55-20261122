@@ -14,7 +14,7 @@ from .visual import (COOL, DIVERGE, GOLD, HOT, MINT, Extent, Trace, contact_shee
 
 
 def _physical_map(dataset, photo):
-    return scale_bar(photo, dataset.scale.width_mm)
+    return scale_bar(overlay(photo, dataset.grid_guides("surface")), dataset.scale.width_mm)
 
 
 def coverage(dataset, options):
@@ -77,6 +77,7 @@ def normal_report(dataset, options):
     residual = flag(options.get("show_residual", True), "Fit residual view")
     field = solve(dataset)
     fit_summary = _fit_metrics(dataset, field)
+    fit_summary["interior_grid"] = dataset.grid_readout()
     rows = [_field_row(frame, field, dataset.selection) for frame in dataset.frames]
     result = Result("normals", "Normal field and measured reflectance",
                     "Estimate which direction each visible surface element faces under the selected lamps.",
@@ -131,7 +132,8 @@ def height_report(dataset, options):
     image = heatmap(height.height, height.visible, extent, DIVERGE, True)
     result = Result("height", "Relative height, contours and island coverage",
                     "Integrate slopes on physically spaced pixels with a separate relative zero for each continuous island.",
-                    {**height.report(), "display_mm_range": extent.public()}, list(height.islands))
+                    {**height.report(), "display_mm_range": extent.public(),
+                     "interior_grid": dataset.grid_readout()}, list(height.islands))
     result.image("relative-height", scale_bar(image, dataset.scale.width_mm), high_resolution=True)
     try:
         lines, levels = contour_levels(height, interval)

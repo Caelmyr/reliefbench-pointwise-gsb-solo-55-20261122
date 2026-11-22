@@ -210,6 +210,13 @@ def _metadata(page, record):
     for key, value in fields:
         page.label(14, y + 5, key, 8, True)
         y = page.paragraph(55, y + 5, _summary_value(value), width - 45, 8.5, max_lines=2)
+    grid = record["evidence"].get("interior_grid")
+    if grid and grid.get("sources"):
+        cells = " / ".join(
+            f'{item["photo"]}: {item.get("support_extent_mm") or "none"} mm, edge {item.get("edge_correction_px")} px'
+            for item in grid["sources"])
+        page.label(14, y + 5, "Interior cells", 8, True)
+        y = page.paragraph(55, y + 5, cells, width - 45, 8.5, max_lines=3)
     return y + 7
 
 
@@ -249,6 +256,12 @@ def _source_sheet(page, sources, start):
         page.paragraph(14, y + 11, label, page.width - 28, 8)
         page.label(14, y + 16, f'Original SHA-256 {source["hash"]}', 7.3, False, MUTED)
         page.label(14, y + 21, f'Registration {source["registration_id"]}', 8, False, MUTED)
+        grid = source.get("interior_grid")
+        if grid:
+            page.label(14, y + 26, (f'Interior cells: {grid.get("control_points", 0)} marks, '
+                                    f'{_summary_value(grid.get("support_extent_mm"))} mm, '
+                                    f'edge {grid.get("edge_correction_px")} px'), 7.5, False, MUTED)
+            y += 5
         y += 22
 
 

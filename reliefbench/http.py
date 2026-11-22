@@ -12,6 +12,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .archive import build_packet, verify_packet
 from .demo import DEMOS, cover, sample
+from .gridfit import GridSubmission, fit as fit_grid
 from .models import (CaptureSpec, CropSpec, Point, Problem, SurfaceSpec, choice, fields, filename,
                      flag, identifier, mapping, text, whole)
 from .printbook import report_pdf
@@ -21,7 +22,7 @@ from .raster import decode, png
 from .registration import Registration, examine_registration
 from .results import Result
 from .storage import Library
-from .visual import GOLD, MINT, flatten_rgb, overlay, scale_bar, split_visual
+from .visual import GOLD, HOT, MINT, flatten_rgb, overlay, scale_bar, split_visual
 from .transfer import export_capture_set, import_capture_set, inspect_capture_set
 from .workflow import catalog, run
 
@@ -92,11 +93,43 @@ def _registration_trial(photo, spec, physical):
         raise Problem("Too little usable surface area lies inside these corners.")
     source = flatten_rgb(raw.rgb, raw.alpha >= .98, False)
     proto = scale_bar(flatten_rgb(code, visible, False), scale.width_mm)
-    drawn = overlay(source, [("closed", model.corners.tolist(), MINT, "Surface outline"),
-                             *[("point", [p], GOLD, str(i)) for i, p in enumerate(model.corners.tolist(), 1)]])
+    guides = [("closed", model.corners.tolist(), MINT, "Surface outline"),
+              *[("point", [p], GOLD, str(i)) for i, p in enumerate(model.corners.tolist(), 1)]]
+    if model.grid is not None:
+        summary = model.grid_summary(raw.shape)
+        flagged = {point["mark"]: point["inconsistent"] for point in summary.get("points", [])}
+        marks = model.grid.public()["points"]
+        guides.extend(("point", [point["camera"]], HOT if flagged.get(point["mark"]) else MINT,
+                       f"M{point['mark']}") for point in marks)
+        for outline in summary.get("support_outlines_px", []):
+            guides.append(("closed", (np.asarray(outline) / [raw.shape[1] - 1, raw.shape[0] - 1]).tolist(),
+                           GOLD, "Interior cells"))
+        proto = overlay(proto, [("closed", outline, GOLD, "Interior cells")
+                                for outline in summary.get("support_polygons", [])])
+    drawn = overlay(source, guides)
     report = Result("registration", "Four-corner registration",
                     "Compare original coordinates against the measured planar crop.",
                     {"scale": scale.public(), **metrics})
+    if model.grid is not None:
+        plain = Registration.from_data({"id": "preview", "corners": spec.public()["corners"], "note": ""})
+        plain_code, plain_visible, _, _ = examine_registration(raw, plain, physical["width_mm"], physical["height_mm"])
+        report.image("registration-adjustment", split_visual(
+            scale_bar(flatten_rgb(plain_code, plain_visible, False), scale.width_mm), proto,
+            "Four corners only", "With interior cells"))
+        summary = dict(model.grid_summary(raw.shape))
+        report.metrics["interior_grid"] = summary
+        if summary.get("border_marks"):
+            report.warnings.append(summary.get("border_note") or
+                                   "Some marks sit too close to the plate border to move it safely.")
+        in_band = [point for point in summary.get("points", []) if point.get("near_border")]
+        if in_band and len(in_band) == len(summary.get("points", [])):
+            raise Problem("All marked cells sit in the tapered border band. Mark intersections nearer the middle so "
+                          "the edge is not moved.")
+        if (summary.get("corner_correction_px") or 0.) > .01:
+            report.warnings.append("The four corners moved. The interior correction should leave them where the "
+                                   "corner marks put them.")
+        if summary.get("suggested_exclusion"):
+            report.warnings.append(summary["suggested_exclusion"]["message"])
     report.image("registration-preview", split_visual(drawn, proto, "Camera", "Physical crop"))
     report.image("rectified-frame", proto)
     return report, metrics
@@ -177,13 +210,19 @@ def register_registration(app, library, work):
     @app.post("/api/captures/<cid>/registration")
     def register_photo(cid):
         obj = data()
-        fields(obj, "corners", "note", "save")
+        fields(obj, "corners", "note", "save", "grid")
         store = flag(obj.get("save", False), "Retain this registration")
         spec = CropSpec.parse({k: v for k, v in obj.items() if k != "save"})
         cid = identifier(cid)
         photo, (image, _) = library.capture_asset(cid)
         parent = library.get_surface(photo["surface_id"])["surface"]
         with work.enter():
+            raw = decode(image, photo["filename"])
+            if spec.grid is not None:
+                base = Registration.from_data({"id": "trial", "corners": spec.public()["corners"], "note": ""})
+                submission = GridSubmission.parse(spec.grid, parent)
+                refinement = fit_grid(submission, base.to_surface, base.to_camera, raw.shape)
+                spec = CropSpec(spec.corners, spec.note, refinement.public())
             result, metrics = _registration_trial((photo, image), spec, parent)
             if store:
                 revision = library.add_registration(cid, spec, metrics)
@@ -220,7 +259,8 @@ def register_registration(app, library, work):
             raise Problem("One or more points cross the projective horizon on this view.")
         return {"registration": current.id, "registration_revision": resolved["revision"] if resolved else None,
                 "positions": positions, "units": {"camera_px": "pixel", "surface_mm": "mm"},
-                "surface_id": sid}
+                "surface_id": sid,
+                "interior_grid": current.grid_summary((photo["image"]["size"][1], photo["image"]["size"][0]))}
 
 
 

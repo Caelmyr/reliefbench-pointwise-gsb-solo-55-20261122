@@ -198,7 +198,8 @@ def mark_geometry(dataset, options):
     result = Result("marks", "Physical marks and original coordinates",
                     "Measure marked spans and outlines in the plate plane with original camera witnesses.",
                     {"marks": len(figures), "original": frame.title, "scale": dataset.scale.public(),
-                     "coordinate_registration": frame.registration.id}, summary)
+                     "coordinate_registration": frame.registration.id,
+                     "interior_grid": dataset.grid_readout()}, summary)
     result.image("calibrated-measurements", scale_bar(overlay(image, flat_shapes), dataset.scale.width_mm))
     result.image("original-mark-locations", overlay(camera, camera_shapes))
     result.table("mark-measurements")

@@ -38,7 +38,8 @@ def _export_rows(library, acquisitions):
         data, mime = library.read_asset(known["hash"])
         filename_key = filename(known["filename"]).replace(" ", "-")
         relative = f"photos/{num:02d}-{filename_key}"
-        records = [{"corners": item["corners"], "note": item["note"], "revision": item["revision"]}
+        records = [{"corners": item["corners"], "note": item["note"], "revision": item["revision"],
+                    **({"grid": item["grid"]} if item.get("grid") else {})}
                    for item in reversed(known["registrations"])]
         row = {"source_id": known["id"], "name": known["filename"], "metadata": known["metadata"],
                "source_version": known["version"], "sha256": _checksum(data),
@@ -126,7 +127,8 @@ def _shape_registration(raw, captured):
     for idx, obj in enumerate(raw, 1):
         if not isinstance(obj, dict) or obj.get("revision") != idx:
             raise Problem("Registration revisions in the capture packet must be consecutive.")
-        spec = CropSpec.parse({"corners": obj.get("corners"), "note": obj.get("note", "")})
+        spec = CropSpec.parse({"corners": obj.get("corners"), "note": obj.get("note", ""),
+                               "grid": obj.get("grid")})
         homography = Registration.from_data({"id": f"trial-{idx}", **spec.public()})
         geometry = homography.overview(captured.shape)
         if geometry["geometrically_observed_fraction"] < .10:

@@ -228,17 +228,24 @@ class CaptureSpec:
 class CropSpec:
     corners: tuple[Point, ...]
     note: str
+    grid: dict | None = None
 
     @classmethod
     def parse(cls, raw):
         body = mapping(raw, "Registration")
-        fields(body, "corners", "note")
+        fields(body, "corners", "note", "grid")
         values = list_of(body.get("corners"), "Corners", 4, 4)
         corners = tuple(Point.parse(p, "Registration corner", -.12, 1.12) for p in values)
-        return cls(corners, text(body.get("note", ""), "Registration note", 480, False))
+        grid = body.get("grid")
+        if grid is not None and not isinstance(grid, dict):
+            raise Problem("Interior grid marks need a named document with points.")
+        return cls(corners, text(body.get("note", ""), "Registration note", 480, False), grid)
 
     def public(self):
-        return {"corners": [x.public() for x in self.corners], "note": self.note}
+        body = {"corners": [x.public() for x in self.corners], "note": self.note}
+        if self.grid is not None:
+            body["grid"] = self.grid
+        return body
 
 
 @dataclass(frozen=True)
