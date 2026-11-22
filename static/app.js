@@ -331,7 +331,11 @@ function renderWorkbench(){
   const page=el("div",{class:"workspace"},[sourcePane(),stagePane(),toolPane()]);
   const results=el("section",{class:"results",id:"results"});
   root.append(page,results);
-  if(state.last) renderReport(results,state.last);
+  if(state.last) renderReport(results,state.last,liveContext(state.last));
+}
+function liveContext(output){
+  if(!output?.inputs || output.report?.kind!=="normals") return null;
+  return {live:state.item.surface.id,inputs:output.inputs};
 }
 function requestForInspection(){
   const doc=query("tool-options");
@@ -354,7 +358,7 @@ async function runInspection(retain,title){
     const output=await api(`/api/surfaces/${s}/analysis/${kind}`,json("POST",data));
     if(state.item?.surface.id!==s || state.tool!==kind) return;
     state.last={...output,inputs:data};
-    renderReport(query("results"),output); query("retain").disabled=false;
+    renderReport(query("results"),output,liveContext(state.last)); query("retain").disabled=false;
     if(retain) { state.loadedInputs=data; await openSurface(s,true); }
     note(retain ? "Evidence archived." : "Inspection ready.");
   } finally {if(target) target.disabled=false;}
@@ -370,7 +374,34 @@ function table(rows){
   const all=el("tbody",{},rows.slice(0,800).map(row=>el("tr",{},cols.map(k=>el("td",{text:asText(row[k])})))));
   return el("details",{},[el("summary",{text:`Observations (${rows.length} rows)`}),el("div",{class:"table"},[el("table",{},[head,all])])]);
 }
-function renderReport(target, output){
+function siteReviewBlock(output, context) {
+  const report=output.report;
+  if(!context || report.kind!=="normals") return null;
+  const mode=report.metrics?.estimator || "ordinary";
+  const preferred=mode==="guarded" ? "site-decision" : "surface-normals";
+  const file=(output.files||[]).find(f=>f.key===preferred && f.mime==="image/png")
+    || (output.files||[]).find(f=>f.key==="surface-normals" && f.mime==="image/png");
+  const uri=file && (file.url||file.data);
+  if(!uri) return null;
+  const holder=el("section",{class:"site-review"});
+  const result=el("div",{class:"site-result"});
+  const img=el("img",{src:uri,alt:"Click a location to review its photographs",class:"pickable"});
+  img.onclick=event=>guarded(async()=>{
+    const rect=img.getBoundingClientRect();
+    const point=[(event.clientX-rect.left)/rect.width,(event.clientY-rect.top)/rect.height].map(v=>Number(Math.min(1,Math.max(0,v)).toFixed(5)));
+    const reply=context.saved
+      ? await api(`/api/records/${context.saved}/site-review`,json("POST",{point}))
+      : await api(`/api/surfaces/${context.live}/site-review`,json("POST",{
+          captures:context.inputs.captures, corrections:context.inputs.corrections||{},
+          region:context.inputs.region, options:context.inputs.options, point}));
+    renderReport(result,reply);
+    note(`Reviewed the site at ${point.map(v=>v.toFixed(3)).join(", ")}.`);
+  });
+  holder.append(el("h2",{text:"Review one site"}),
+    el("p",{class:"muted",text:"Click a suspect location to see every camera's matching point and why it was kept or set aside."}), img, result);
+  return holder;
+}
+function renderReport(target, output, context){
   if(!target) return;
   const report=output.report;
   const metrics=el("dl",{class:"metrics"},Object.entries(report.metrics||{}).map(([k,v])=>el("div",{},[
@@ -386,8 +417,9 @@ function renderReport(target, output){
     } else if(uri) downloads.append(link(file.name,uri,{class:"action",download:file.name}));
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
+  const site=siteReviewBlock(output,context);
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
-    metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+    metrics,figures,downloads,site,table(report.rows),warnings].filter(Boolean));
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});
@@ -403,7 +435,8 @@ function renderArchive(){
 async function openRecord(id){ const reply=await api(`/api/records/${id}`);state.opened=reply.record;displayRecord(reply.record); }
 function displayRecord(record){
   const target=query("saved-report");
-  renderReport(target,record);
+  const context=record.kind==="normals" ? {saved:record.id} : null;
+  renderReport(target,record,context);
   const bar=el("div",{class:"row"},[el("small",{text:`Review ${human(record.state)} · Revision ${record.revision}`}),
     button("Review evidence",()=>editReview(record)),link("Download evidence packet",`/api/records/${record.id}/packet`,{class:"action"}),
     link("Packet without photos",`/api/records/${record.id}/packet?originals=0`,{class:"action"}),

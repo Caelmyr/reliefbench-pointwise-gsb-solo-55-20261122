@@ -15,9 +15,11 @@ The default address is `http://127.0.0.1:19958/`. The server mounts a Compose vo
 
 - Sensor acquisition: clipping and histograms, source alignment, native readout at marks, line traces, multi-photo support, local detail, physical measurements and ruler readback.
 - Reference photography: neutral and color standards, fixed-pattern dark checks, radial flat-field checks, preview of per-channel flat compensation.
-- Light and surface: lamp coverage and mount planning, marked response by angle, directional normals and reflectance, a withheld lamp check, slope consistency, relative height, contours and virtual lighting.
+- Light and surface: lamp coverage and mount planning, marked response by angle, directional normals and reflectance in an ordinary or guarded estimator, a withheld lamp check, slope consistency, relative height, contours and virtual lighting.
 - Physical readout: topology features, material cells, line cross-sections, local texture amplitude and directional spectra. Retained data include CSV, PNG and relevant calibrated TIFF, OBJ, PLY or SVG.
 - Source history: four-corner planar registrations, named setup review, snapshot-safe inspections, immutable assets, review events, PDF handouts and independently checkable evidence and capture packets.
+
+The normals tool offers two estimators. Ordinary uses every usable sample in one least-squares fit. Guarded refits each site from only the photographs that agree there, so a single glossy corner or cast shadow no longer tilts the whole local normal. When fewer than three photographs agree at a site, the guarded result leaves that site pending instead of filling it from a biased set. Both modes carry a per-photo participation map; open a result or a saved record and click a suspect location to see each camera's matching point, the predicted versus observed reading, and why that photograph was used or set aside. The review reads the same source bytes, settings and registrations as the original run, so a saved record can be revisited at the same spot later.
 
 The Slate and Ochre examples are generated. Their reference photographs include a ruler, color swatches, a flat field and a pair of dark reference exposures. Coordinates are normalized from the top-left. Azimuth is clockwise from image right with positive elevation toward the camera.
 

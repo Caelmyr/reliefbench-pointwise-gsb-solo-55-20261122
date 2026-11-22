@@ -6,7 +6,7 @@ from scipy import ndimage
 from .heightfield import contour_levels, derivative_consistency, integrate
 from .lightmodel import (color_relit, compare_positions, directions, diversity, exposure_settings,
                          solve, spherical_coverage)
-from .models import Point, Problem, fields, flag, light_vector, number, rounded, whole
+from .models import Point, Problem, choice, fields, flag, light_vector, number, rounded, whole
 from .raster import (line_samples, safe_fraction, sample_field, statistics, tiff_float)
 from .results import Result
 from .visual import (COOL, DIVERGE, GOLD, HOT, MINT, Extent, Trace, contact_sheet, flatten_rgb,
@@ -73,14 +73,22 @@ def _fit_metrics(dataset, field):
 
 
 def normal_report(dataset, options):
-    fields(options, "show_residual")
+    fields(options, "mode", "show_residual")
+    mode = choice(options.get("mode", "ordinary"), "Estimator", ("ordinary", "guarded"))
     residual = flag(options.get("show_residual", True), "Fit residual view")
-    field = solve(dataset)
+    field = solve(dataset, mode)
     fit_summary = _fit_metrics(dataset, field)
     rows = [_field_row(frame, field, dataset.selection) for frame in dataset.frames]
-    result = Result("normals", "Normal field and measured reflectance",
-                    "Estimate which direction each visible surface element faces under the selected lamps.",
-                    fit_summary, rows)
+    if mode == "guarded":
+        fit_summary = {**fit_summary, **_guarded_metrics(dataset, field)}
+        rows = [{**row, **_participation_row(i, field)} for i, row in enumerate(rows)]
+        title = "Guarded normal field and measured reflectance"
+        summary = ("Estimate each visible surface direction from only the photographs that agree at that site, "
+                   "leaving thinly supported sites pending.")
+    else:
+        title = "Normal field and measured reflectance"
+        summary = "Estimate which direction each visible surface element faces under the selected lamps."
+    result = Result("normals", title, summary, fit_summary, rows)
     result.image("surface-normals", _physical_map(dataset, normals_image(field.normals, field.valid)))
     result.image("surface-albedo", _physical_map(dataset, flatten_rgb(field.rgb, field.valid)))
     result.image("measurement-support", support_image(field.input_count, dataset.selection, len(dataset.frames)))
@@ -91,8 +99,59 @@ def normal_report(dataset, options):
         extent = Extent.fit(field.error, field.valid, zero="minimum")
         result.image("model-residual", heatmap(field.error, field.valid, extent, grid=True))
         result.metrics["residual_color_range"] = extent.public()
+    result.metrics["estimator"] = mode
+    if mode == "guarded":
+        _guarded_assets(result, dataset, field)
     result.warnings.append("Computed from unclipped captures above the minimum signal and a diffuse reflection model. Bright directional sheen can bias the fit.")
+    if mode == "guarded":
+        result.warnings.append("A site is retained only when at least three photographs agree there. Sites with fewer agreeing photographs are left pending rather than filled from a biased set.")
     return result.table("source-fit")
+
+
+def _participation_row(index, field):
+    """Per-photograph counts of how often the guarded fit used or set it aside."""
+    participation = field.participation[index]
+    return {"used_sites": int((participation == 4).sum()), "set_aside_sites": int((participation == 3).sum()),
+            "clipped_sites": int((participation == 2).sum()),
+            "no_sample_sites": int((participation == 0).sum())}
+
+
+def _guarded_metrics(dataset, field):
+    states = field.states
+    inside = dataset.selection
+    retained = int((states == 0).sum())
+    total = int(inside.sum())
+    excluded = int((field.participation == 3).sum())
+    used = int((field.participation == 4).sum())
+    candidates = np.maximum(field.input_count, 1)
+    used_count = (field.participation == 4).sum(axis=0)
+    valid = inside & field.valid
+    return {
+        "retained_fraction_of_selection": rounded(retained / max(1, total)),
+        "pending_fraction_of_selection": rounded(int(((states != 0) & inside).sum()) / max(1, total)),
+        "sites_pending_too_few_agreeing": int((states == 1).sum()),
+        "sites_pending_poor_separation": int((states == 2).sum()),
+        "sites_pending_too_few_candidates": int((states == 3).sum()),
+        "photos_used_per_site": statistics(used_count, valid),
+        "photographs_set_aside_fraction": rounded(excluded / max(1, used + excluded)),
+        "median_agreeing_fraction": (rounded(float(np.median(used_count[valid] / candidates[valid])))
+                                     if valid.any() else None),
+    }
+
+
+def _guarded_assets(result, dataset, field):
+    # Indexed by site state code: retained, too few agreeing, poor separation, too few candidates.
+    palette = np.array([(46, 132, 108), (196, 106, 82), (214, 178, 92), (132, 104, 120)])
+    picture = palette[np.clip(field.states, 0, 3)]
+    picture[~dataset.selection] = (33, 43, 47)
+    result.image("site-decision", scale_bar(Image.fromarray(picture.astype(np.uint8)), dataset.scale.width_mm))
+    result.metrics["site_decision_key"] = ("teal retained · red-orange too few agreeing · gold poor separation · "
+                                           "mauve too few usable photos · slate outside the region")
+    result.warnings.append("To revisit one site, review a position on the result or a saved record to see each photograph's matching point.")
+    for i in range(len(dataset.frames)):
+        participation = field.participation[i]
+        key = f"participation-{i + 1:02d}"
+        result.add(key, f"{key}.tiff", "image/tiff", tiff_float(participation.astype(np.float32), dataset.selection))
 
 
 def gradient_check(dataset, options):

@@ -11,8 +11,9 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .archive import build_packet, verify_packet
+from .dataset import DataSet
 from .demo import DEMOS, cover, sample
-from .models import (CaptureSpec, CropSpec, Point, Problem, SurfaceSpec, choice, fields, filename,
+from .models import (CaptureSpec, CropSpec, JobRequest, Point, Problem, SurfaceSpec, choice, fields, filename,
                      flag, identifier, mapping, text, whole)
 from .printbook import report_pdf
 from .procedures import preview_procedure, save_procedure
@@ -20,6 +21,7 @@ from .provenance import public_signature, require_match, seal
 from .raster import decode, png
 from .registration import Registration, examine_registration
 from .results import Result
+from .sites import review_current_site, saved_site_review
 from .storage import Library
 from .visual import GOLD, MINT, flatten_rgb, overlay, scale_bar, split_visual
 from .transfer import export_capture_set, import_capture_set, inspect_capture_set
@@ -281,6 +283,29 @@ def register_results(app, library, work):
                 saved = library.save_inspection(sid, title, result, evidence)
                 return {"record": saved, **result.public(evidence)}, 201
         return result.public(evidence)
+
+    @app.post("/api/surfaces/<sid>/site-review")
+    def review_live_site(sid):
+        obj = data()
+        fields(obj, "captures", "corrections", "region", "options", "point")
+        point = Point.parse(obj.get("point"), "Review point")
+        job = JobRequest.parse("normals", {key: obj[key] for key in ("captures", "corrections", "region", "options")})
+        mode = choice(job.options.get("mode", "ordinary"), "Estimator", ("ordinary", "guarded"))
+        with work.enter():
+            dataset = DataSet.load(library, identifier(sid), job)
+            dataset.lamps()
+            review = review_current_site(dataset, point, mode)
+        return review.public({"kind": "normals", "point": point.public(), "mode": mode})
+
+    @app.post("/api/records/<rid>/site-review")
+    def review_saved_site(rid):
+        obj = data()
+        fields(obj, "point")
+        point = Point.parse(obj.get("point"), "Review point")
+        record = library.get_inspection(identifier(rid))
+        with work.enter():
+            review = saved_site_review(library, record["evidence"], point)
+        return review.public({"record": record["id"], "point": point.public()})
 
     @app.get("/api/records/<rid>")
     def read_inspection(rid):
