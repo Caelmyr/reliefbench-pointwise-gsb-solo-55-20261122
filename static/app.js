@@ -374,20 +374,53 @@ function renderReport(target, output){
   if(!target) return;
   const report=output.report;
   const metrics=el("dl",{class:"metrics"},Object.entries(report.metrics||{}).map(([k,v])=>el("div",{},[
-    el("dt",{text:human(k)}),el("dd",{text:asText(v)}),
+    el("dt",{text:human(k)}),el("dd",{text:asProbeText(k,v)}),
   ])));
   const figures=el("div",{class:"images"});
   const downloads=el("div",{class:"row"});
   for(const file of output.files||[]){
     const uri=file.url||file.data;
     if(file.mime==="image/png"&&uri){
-      figures.append(el("figure",{},[el("img",{src:uri,alt:human(file.key)}),
+      const image=el("img",{src:uri,alt:human(file.key)});
+      if(file.key==="cast-shadow-light"||file.key==="shadow-classification"){
+        image.classList.add("probe-target");
+        image.title="Click to set the shadow probe point";
+        image.onclick=event=>guarded(()=>chooseProbe(event,image));
+      }
+      if(file.key==="probe-occluder") image.classList.add("probe-result");
+      figures.append(el("figure",{},[image,
         el("figcaption",{},[document.createTextNode(human(file.key)),link("Download",uri,{download:file.name})])]));
     } else if(uri) downloads.append(link(file.name,uri,{class:"action",download:file.name}));
   }
   const warnings=report.warnings?.length?el("ul",{class:"warnings"},report.warnings.map(w=>el("li",{text:w}))):null;
   target.replaceChildren(...[el("h2",{text:report.title}),el("p",{class:"muted",text:report.summary}),
     metrics,figures,downloads,table(report.rows),warnings].filter(Boolean));
+}
+function asProbeText(key,value){
+  if(key==="probe"&&value&&typeof value==="object"){
+    return [value.classification,
+      value.occluder?`blocker ${value.occluder.map(n=>n.toFixed(3)).join(", ")}`:"",
+      value.occluder_height_mm!=null?`height ${value.occluder_height_mm} mm`:"",
+      value.ray_crossed_unmeasured_gap?"ray crossed unmeasured gap":""].filter(Boolean).join(" · ");
+  }
+  return asText(value);
+}
+async function chooseProbe(event,image){
+  if(state.tool!=="relight") throw new Error("Open the Virtual lamp tool to probe shadows.");
+  const box=image.getBoundingClientRect();
+  const legendHeight=48; // backend legend strip, see reliefbench/shadows.py LEGEND_STRIP_HEIGHT
+  const naturalHeight=image.naturalHeight||box.height;
+  const legendFraction=legendHeight/naturalHeight;
+  const x=Math.max(0,Math.min(1,(event.clientX-box.left)/box.width));
+  const rawY=(event.clientY-box.top)/box.height;
+  const y=Math.max(0,Math.min(1,(rawY-legendFraction)/(1-legendFraction)));
+  const point=[Number(x.toFixed(5)),Number(y.toFixed(5))];
+  const form=query("tool-options");
+  const field=form?.querySelector("textarea[name=probe]");
+  if(!field) throw new Error("Switch on cast-shadow projection in the tool controls first.");
+  field.value=JSON.stringify([point]);
+  note(`Probe set at ${point.map(n=>n.toFixed(3)).join(", ")} — running the lamp inspection.`);
+  await runInspection(false);
 }
 function renderArchive(){
   const list=el("div",{class:"record-list"});

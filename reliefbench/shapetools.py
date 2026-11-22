@@ -6,9 +6,10 @@ from scipy import ndimage
 from .heightfield import contour_levels, derivative_consistency, integrate
 from .lightmodel import (color_relit, compare_positions, directions, diversity, exposure_settings,
                          solve, spherical_coverage)
-from .models import Point, Problem, fields, flag, light_vector, number, rounded, whole
+from .models import Point, Problem, fields, flag, light_vector, list_of, number, rounded, whole
 from .raster import (line_samples, safe_fraction, sample_field, statistics, tiff_float)
 from .results import Result
+from .shadows import LEGEND, cast_shadows, classification_image, probe_shadow, tinted_image, with_legend
 from .visual import (COOL, DIVERGE, GOLD, HOT, MINT, Extent, Trace, contact_sheet, flatten_rgb,
                      heatmap, normals_image, overlay, plot, scale_bar, split_visual, support_image)
 
@@ -150,29 +151,89 @@ def height_report(dataset, options):
 
 
 def relighting(dataset, options):
-    fields(options, "azimuth", "elevation", "ambient", "contrast", "colored", "opposite")
+    fields(options, "azimuth", "elevation", "ambient", "contrast", "colored", "opposite",
+           "cast_shadows", "probe")
     azimuth = number(options.get("azimuth", 42), "Light azimuth", -180, 360)
     elevation = number(options.get("elevation", 32), "Light elevation", 5, 89.9)
     colored = flag(options.get("colored", True), "Use measured reflectance")
     opposite = flag(options.get("opposite", True), "Show opposite light")
+    cast_mode = flag(options.get("cast_shadows", False), "Project measured cast shadows")
     contrast, ambient = exposure_settings(options)
     field = solve(dataset)
     direction = light_vector(azimuth, elevation)
     rgb = color_relit(field, direction, ambient, contrast, colored)
     angle_bins = _lighting_readout(field, direction)
     rendered = _physical_map(dataset, flatten_rgb(rgb, field.valid))
+    metrics = {"shadow_model": "measured-height cast projection" if cast_mode else "local normal only",
+               "virtual_light_vector": direction, "azimuth": azimuth % 360, "elevation": elevation,
+               "ambient": ambient, "contrast": contrast, "use_measured_reflectance": colored,
+               **angle_bins}
     result = Result("relight", "Virtual lamp inspection",
                     "Move a local light direction across measured normals while retaining the chosen reflectance view.",
-                    {"virtual_light_vector": direction, "azimuth": azimuth % 360, "elevation": elevation,
-                     "ambient": ambient, "contrast": contrast, "use_measured_reflectance": colored,
-                     **angle_bins})
+                    metrics)
     result.image("selected-light", rendered)
     if opposite:
         back = color_relit(field, light_vector((azimuth + 180) % 360, elevation), ambient, contrast, colored)
         result.image("opposite-light", split_visual(rendered, _physical_map(dataset, flatten_rgb(back, field.valid)),
                                                    "Chosen lamp", "Opposite azimuth"))
-    result.warnings.append("Light response is local to each normal. Relief casting a shadow onto another region is not simulated.")
+    if not cast_mode:
+        result.warnings.append("Light response is local to each normal. Relief casting a shadow onto another region is not simulated; switch on cast-shadow projection to include it.")
+        return result
+    height = integrate(field, dataset.scale)
+    shadow = cast_shadows(height, direction)
+    quantized = flatten_rgb(rgb, field.valid)
+    base_view = tinted_image(np.asarray(quantized), shadow)
+    result.image("cast-shadow-light", _physical_map(dataset, base_view))
+    result.image("shadow-classification", _physical_map(dataset, classification_image(shadow)))
+    result.add("shadow-classes", "shadow-classes.tiff", "image/tiff",
+               tiff_float(shadow.state.astype(np.float32), shadow.visible))
+    basis = {"basis": "Ray march on the integrated relative-height grid; LIT 0, self-backface 1, "
+                      "measured cast shadow 2, uncertain shadow 3.",
+             "shadow_bias": {"slope_degrees": 1.0, "minimum_mm": 0.003},
+             "height_grid": height.scale.public(), "integration_stride": height.stride,
+             "ray_step_mm": {"y": shadow.step_mm[0], "x": shadow.step_mm[1]},
+             "maximum_ray_steps": shadow.ray_steps,
+             "island_datum_note": "Rays crossing between independent height islands are treated as an unmeasured gap.",
+             **shadow.fractions()}
+    result.metrics.update(basis)
+    result.document("shadow-basis", basis)
+    result.warnings.append("Self backface (the element faces away from the lamp) is shown separately from measured cast shadows (another measured rise blocks the ray).")
+    result.warnings.append("Uncertain shadows mean the ray crossed a cell with no measured height, or an island datum break, before reaching a blocker. They are not confirmed shadows and are marked with hatching.")
+    probe = _probe_point(options)
+    if probe is not None:
+        row = probe_shadow(shadow, probe, height.height)
+        result.metrics["probe"] = row
+        result.table("shadow-probe", [row])
+        result.image("probe-occluder", _probe_image(dataset, np.asarray(quantized), shadow, row))
+        result.warnings.append("Probe geometry uses the coarse integrated height grid; inspect the height-grid sampling before treating the occluder point as exact.")
+    else:
+        result.warnings.append("Click a point in the cast-shadow image to identify the measured rise blocking its light.")
     return result
+
+
+def _probe_point(options):
+    raw = options.get("probe", [])
+    if not isinstance(raw, list):
+        raise Problem("Probe needs a coordinate pair or an empty list.")
+    if not raw:
+        return None
+    values = list_of(raw, "Probe", 1, 1)
+    return Point.parse(values[0], "Probe point")
+
+
+def _probe_image(dataset, base_rgb, shadow, probe_row):
+    plain = tinted_image(base_rgb, shadow, legend=False)
+    items = []
+    if probe_row["occluder"]:
+        items.append(("line", [probe_row["point"], probe_row["occluder"]], GOLD, ""))
+        items.append(("point", [probe_row["occluder"]], HOT, ""))
+    if probe_row["first_gap_point"]:
+        items.append(("point", [probe_row["first_gap_point"]], GOLD, ""))
+    items.append(("point", [probe_row["point"]], MINT, ""))
+    marked = overlay(plain, items) if items else plain
+    extra = ((HOT, "Blocking rise marker"), (GOLD, "First unmeasured gap")) if probe_row["first_gap_point"] else (
+        (HOT, "Blocking rise marker"),)
+    return _physical_map(dataset, with_legend(marked, (*LEGEND, *extra)))
 
 
 def _lighting_readout(field, direction):
